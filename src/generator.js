@@ -235,7 +235,7 @@ function placeRegionRoot(seed, region, parent, occupiedRooms, reservedCorridors)
   if (!parent) {
     return {
       room: rect(Math.round(-dims.w / 2), Math.round(-dims.h / 2), dims.w, dims.h, rootMeta),
-      entryCorridor: null,
+      entryCorridors: [],
       parentAnchorId: null,
       growthSide: randInt(seed, 0, 3, "region", region.id, "root-growth-side"),
     };
@@ -278,7 +278,7 @@ function placeRegionRoot(seed, region, parent, occupiedRooms, reservedCorridors)
 
     return {
       room: candidate,
-      entryCorridor: corridor,
+      entryCorridors: [corridor],
       parentAnchorId: anchor.id,
       growthSide: side,
     };
@@ -286,6 +286,8 @@ function placeRegionRoot(seed, region, parent, occupiedRooms, reservedCorridors)
 
   const direction = sideVector(primarySide);
   const parentBounds = parent.bounds;
+  const boundaryCandidates = chooseParentBoundaryRooms(parent, dx, dy).slice(0, Math.min(8, parent.rooms.length));
+  const fallbackWidth = Math.round(randRange(seed, dna.corridor[0], dna.corridor[1], "region", region.id, "fallback-entry-width"));
   for (let ring = 1; ring <= 80; ring += 1) {
     const distance = Math.max(parentBounds.w, parentBounds.h) / 2 + 90 + ring * 34;
     const lateral = signed(seed, 80 + ring * 8, "region", region.id, "fallback-lateral", ring);
@@ -296,12 +298,32 @@ function placeRegionRoot(seed, region, parent, occupiedRooms, reservedCorridors)
     const candidate = rect(Math.round(cx - dims.w / 2), Math.round(cy - dims.h / 2), dims.w, dims.h, rootMeta);
     if (roomHitsRooms(candidate, occupiedRooms, null, 8)) continue;
     if (rectHitsAny(candidate, reservedCorridors, 5)) continue;
-    return {
-      room: candidate,
-      entryCorridor: null,
-      parentAnchorId: null,
-      growthSide: primarySide,
-    };
+
+    const spatialIndex = buildRoomSpatialIndex(occupiedRooms);
+    for (const anchor of boundaryCandidates) {
+      const route = routeRoomsObstacleAware({
+        seed,
+        routeKey: parent.id + ":" + region.id + ":fallback:" + anchor.id,
+        roomA: anchor,
+        roomB: candidate,
+        width: fallbackWidth,
+        spatialIndex,
+        aggressive: true,
+        meta: {
+          regionId: -1,
+          kind: "macro-corridor",
+          edge: parent.id + ":" + region.id,
+          edgeType: "tree",
+        },
+      });
+      if (!route.length) continue;
+      return {
+        room: candidate,
+        entryCorridors: route,
+        parentAnchorId: anchor.id,
+        growthSide: primarySide,
+      };
+    }
   }
 
   throw new Error("Unable to place deterministic root room for region " + region.id);
@@ -321,13 +343,13 @@ function growRegion(seed, region, parent, config, occupiedRooms, reservedCorrido
     y: rootCenter.y,
     growthSide: rootPlacement.growthSide,
     parentAnchorId: rootPlacement.parentAnchorId,
-    entryCorridor: rootPlacement.entryCorridor,
+    entryCorridors: rootPlacement.entryCorridors,
   };
   const rooms = [root];
   const corridors = [];
   const doors = [];
   occupiedRooms.push(root);
-  if (rootPlacement.entryCorridor) reservedCorridors.push(rootPlacement.entryCorridor);
+  if (rootPlacement.entryCorridors.length) reservedCorridors.push(...rootPlacement.entryCorridors);
 
   for (let roomIndex = 1; roomIndex < target; roomIndex += 1) {
     let placed = null;
@@ -410,17 +432,19 @@ function connectRegions(seed, grownRegions, edges) {
   const macroCorridors = [];
 
   for (const region of grownRegions) {
-    if (!region.entryCorridor) continue;
-    const corridor = { ...region.entryCorridor };
-    corridor.id = "macro:" + region.parentId + ":" + region.id + ":0";
-    macroCorridors.push(corridor);
+    if (!region.entryCorridors?.length) continue;
+    region.entryCorridors.forEach((entryCorridor, index) => {
+      const corridor = { ...entryCorridor };
+      corridor.id = "macro:" + region.parentId + ":" + region.id + ":" + index;
+      macroCorridors.push(corridor);
+    });
   }
 
   for (const edge of edges) {
     const regionA = grownRegions[edge.a];
     const regionB = grownRegions[edge.b];
-    if (edge.type === "tree" && regionB.parentId === edge.a && regionB.entryCorridor) continue;
-    if (edge.type === "tree" && regionA.parentId === edge.b && regionA.entryCorridor) continue;
+    if (edge.type === "tree" && regionB.parentId === edge.a && regionB.entryCorridors?.length) continue;
+    if (edge.type === "tree" && regionA.parentId === edge.b && regionA.entryCorridors?.length) continue;
 
     let pair = null;
     if (edge.type === "tree") {
@@ -448,6 +472,7 @@ function connectRegions(seed, grownRegions, edges) {
       roomB: pair[1],
       width,
       spatialIndex,
+      aggressive: edge.type === "tree",
       meta: {
         regionId: -1,
         kind: "macro-corridor",
@@ -539,7 +564,8 @@ export function generateWorld(seedInput, userConfig = {}) {
   const totalRoomArea = regions.flatMap((r) => r.rooms).reduce((sum, room) => sum + room.w * room.h, 0);
   const roomOverlaps = countRoomOverlaps(regions);
   const macroRoomIntrusions = countMacroRoomIntrusions(regions, macroCorridors);
-  const failedRoutes = topology.edges.filter((edge) => !edge.routed).length;
+  const failedRoutes = topology.edges.filter((edge) => edge.type === "tree" && !edge.routed).length;
+  const failedLoopRoutes = topology.edges.filter((edge) => edge.type === "loop" && !edge.routed).length;
   const treeCorridors = macroCorridors.filter((corridor) => corridor.edgeType === "tree");
   const meanTreeCorridorLength = treeCorridors.length
     ? treeCorridors.reduce((sum, corridor) => sum + corridorLength(corridor), 0) / treeCorridors.length
@@ -560,6 +586,7 @@ export function generateWorld(seedInput, userConfig = {}) {
       roomOverlaps,
       macroRoomIntrusions,
       failedRoutes,
+      failedLoopRoutes,
       meanTreeCorridorLength,
       roomAreaRatio: totalRoomArea / Math.max(1, bounds.w * bounds.h),
     },
