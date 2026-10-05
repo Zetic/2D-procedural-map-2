@@ -77,6 +77,17 @@ function chooseDna(seed, x, y) {
   return ARCHITECTURE_DNA[index];
 }
 
+function safeSiteRadius(seed, x, y, position) {
+  let nearest = Infinity;
+  for (const { dx, dy } of NEIGHBORS) {
+    const other = sitePosition(seed, x + dx, y + dy);
+    nearest = Math.min(nearest, Math.hypot(other.x - position.x, other.y - position.y));
+  }
+  // Candidate room centers stay inside this radius. The subtraction reserves
+  // room half-size so neighboring site envelopes cannot claim the same floor.
+  return clamp(nearest * 0.41 - 92, 138, 286);
+}
+
 function parentCell(seed, x, y) {
   if (x === 0 && y === 0) return null;
   const sx = Math.sign(x);
@@ -208,7 +219,11 @@ function createPortal(seed, site, neighbor, edgeKey, index) {
   const ny = dy / length;
   const px = -ny;
   const py = nx;
-  const radius = randRange(seed, 176, 242, "edge", edgeKey, site.key, "portal-radius");
+  const radius = clamp(
+    length * randRange(seed, 0.255, 0.315, "edge", edgeKey, site.key, "portal-radius-factor"),
+    138,
+    258,
+  );
   const lateral = signed(seed, 52, "edge", edgeKey, site.key, "portal-lateral");
   const w = randInt(seed, 42, 76, "edge", edgeKey, site.key, "portal-w");
   const h = randInt(seed, 36, 70, "edge", edgeKey, site.key, "portal-h");
@@ -320,7 +335,7 @@ function growSiteRooms(seed, site, dna, config, siteScale, fixedRooms, reservedC
   const minCount = Math.max(7, Math.round(dna.roomCount[0] * 0.74 * config.density));
   const maxCount = Math.max(minCount, Math.round(dna.roomCount[1] * 0.92 * config.density));
   const target = randInt(seed, minCount, maxCount, "site", site.cellX, site.cellY, "room-count");
-  const maxRadius = randRange(seed, 250, 350, "site", site.cellX, site.cellY, "footprint-radius") * siteScale;
+  const maxRadius = site.safeRadius;
 
   for (let index = 1; component.length < target; index += 1) {
     let placed = false;
@@ -378,13 +393,14 @@ function generateSite(seed, x, y, config) {
   const key = cellKey(x, y);
   const position = sitePosition(seed, x, y);
   const dna = chooseDna(seed, x, y);
-  const siteScale = randRange(seed, 0.82, 1.28, "site", x, y, "scale");
+  const siteScale = randRange(seed, 0.82, 1.22, "site", x, y, "scale");
   const site = {
     key,
     cellX: x,
     cellY: y,
     x: position.x,
     y: position.y,
+    safeRadius: safeSiteRadius(seed, x, y, position),
   };
 
   const neighbors = activeNeighbors(seed, x, y, config.loopChance);
