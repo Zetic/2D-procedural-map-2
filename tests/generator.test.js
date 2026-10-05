@@ -37,8 +37,9 @@ test("macro topology remains connected", () => {
       if (!seen.has(next)) { seen.add(next); queue.push(next); }
     }
   }
+  const failed = world.edges.filter((edge) => !edge.routed);
+  assert.equal(world.stats.failedRoutes, 0, "failed routes: " + JSON.stringify(failed));
   assert.equal(seen.size, world.regions.length);
-  assert.equal(world.stats.failedRoutes, 0);
 });
 
 test("all generated geometry is finite and non-empty", () => {
