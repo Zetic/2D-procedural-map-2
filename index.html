@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#111417" />
+  <title>Deterministic Backrooms Map Lab</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">⌗</span>
+        <div>
+          <h1>Deterministic Backrooms Map Lab</h1>
+          <p>Hierarchical graph + architecture DNA + spatial growth</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="fitBtn" class="ghost">Fit map</button>
+        <button id="copyLinkBtn" class="ghost">Copy link</button>
+        <button id="exportJsonBtn" class="ghost">JSON</button>
+        <button id="exportSvgBtn" class="ghost">SVG</button>
+        <button id="exportPngBtn" class="primary">PNG</button>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <aside class="controls" aria-label="Generator controls">
+        <div class="control-section">
+          <label for="seedInput">World seed</label>
+          <div class="seed-row">
+            <input id="seedInput" type="text" value="71-days-after-arrival" spellcheck="false" />
+            <button id="randomSeedBtn" class="square" title="Generate random seed" aria-label="Generate random seed">↻</button>
+          </div>
+          <button id="generateBtn" class="primary full">Generate world</button>
+        </div>
+
+        <div class="control-section">
+          <div class="range-heading">
+            <label for="regionCount">Regions</label>
+            <output id="regionCountValue">44</output>
+          </div>
+          <input id="regionCount" type="range" min="12" max="72" value="44" step="1" />
+
+          <div class="range-heading">
+            <label for="density">Room density</label>
+            <output id="densityValue">1.00×</output>
+          </div>
+          <input id="density" type="range" min="0.55" max="1.55" value="1" step="0.05" />
+
+          <div class="range-heading">
+            <label for="loopChance">Loop tendency</label>
+            <output id="loopChanceValue">18%</output>
+          </div>
+          <input id="loopChance" type="range" min="0" max="0.42" value="0.18" step="0.01" />
+        </div>
+
+        <div class="control-section check-grid">
+          <label class="check"><input id="showLabels" type="checkbox" checked /> <span>Region labels</span></label>
+          <label class="check"><input id="showGraph" type="checkbox" /> <span>Topology graph</span></label>
+          <label class="check"><input id="showBounds" type="checkbox" /> <span>Region bounds</span></label>
+          <label class="check"><input id="showDoors" type="checkbox" checked /> <span>Door seams</span></label>
+        </div>
+
+        <div class="control-section legend-block">
+          <h2>Architecture DNA</h2>
+          <div id="legend" class="legend"></div>
+        </div>
+
+        <div class="control-section info-block">
+          <h2>Generation model</h2>
+          <p>World topology is generated first. Each region receives deterministic architecture DNA, then grows its own local floorplan. Cross-region graph edges are routed after local geometry exists.</p>
+          <p>Every decision is addressed by <code>hash(seed, identity, decision)</code>, so changing render order does not change the map.</p>
+        </div>
+      </aside>
+
+      <section class="map-panel">
+        <canvas id="mapCanvas" aria-label="Generated procedural map"></canvas>
+        <div class="canvas-hud top-left">
+          <span id="seedBadge" class="badge"></span>
+          <span id="statsBadge" class="badge"></span>
+        </div>
+        <div class="canvas-hud bottom-left hint">Wheel: zoom · Drag: pan · Double-click: fit</div>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </section>
+    </section>
+  </main>
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
