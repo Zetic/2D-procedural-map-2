@@ -379,6 +379,7 @@ function generateSector(seed, x, y, config) {
   return {
     id: -1,
     key,
+    label: "S " + x + "," + y,
     cellX: x,
     cellY: y,
     x: c.x,
