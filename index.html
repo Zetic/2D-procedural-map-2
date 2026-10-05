@@ -52,7 +52,7 @@
         </div>
 
         <div class="control-section check-grid">
-          <label class="check"><input id="showLabels" type="checkbox" checked /> <span>Region labels</span></label>
+          <label class="check"><input id="showLabels" type="checkbox" /> <span>Site labels</span></label>
           <label class="check"><input id="showGraph" type="checkbox" /> <span>Topology graph</span></label>
           <label class="check"><input id="showBounds" type="checkbox" /> <span>Region bounds</span></label>
           <label class="check"><input id="showDoors" type="checkbox" checked /> <span>Door seams</span></label>
@@ -65,8 +65,8 @@
 
         <div class="control-section info-block">
           <h2>Generation model</h2>
-          <p>The world is spatially addressed and has no fixed region count. Deterministic sectors are generated around the viewport as you pan, then discarded and regenerated identically when revisited.</p>
-          <p>Every decision is addressed by <code>hash(seed, sector coordinate, identity, decision)</code>. Shared boundary portals are derived from the same edge address on both sides, so generation order does not change the architecture.</p>
+          <p>The world is spatially addressed and has no fixed size. Invisible streaming cells only locate deterministic architectural sites; rooms are not confined to those cells and can cross them freely.</p>
+          <p>Every decision is addressed by <code>hash(seed, spatial coordinate, identity, decision)</code>. Sites form irregular wings and edge-owned transition rooms replace long empty connector halls.</p>
         </div>
       </aside>
 
