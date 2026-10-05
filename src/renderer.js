@@ -25,6 +25,8 @@ export class MapRenderer {
     this.options = { showLabels: true, showGraph: false, showBounds: false, showDoors: true };
     this.view = { scale: 1, x: 0, y: 0 };
     this.drag = null;
+    this.onViewChange = null;
+    this.viewNotifyFrame = 0;
     this.installEvents();
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas.parentElement);
@@ -33,6 +35,23 @@ export class MapRenderer {
 
   setWorld(world, fit = true) { this.world = world; if (fit) this.fit(); else this.draw(); }
   setOptions(options) { this.options = { ...this.options, ...options }; this.draw(); }
+  setViewChangeHandler(handler) { this.onViewChange = handler; }
+
+  scheduleViewChange() {
+    if (!this.onViewChange || this.viewNotifyFrame) return;
+    this.viewNotifyFrame = requestAnimationFrame(() => {
+      this.viewNotifyFrame = 0;
+      if (!this.onViewChange) return;
+      const box = this.canvas.getBoundingClientRect();
+      const center = this.screenToWorld(box.width / 2, box.height / 2);
+      this.onViewChange({
+        center,
+        scale: this.view.scale,
+        worldWidth: box.width / Math.max(0.0001, this.view.scale),
+        worldHeight: box.height / Math.max(0.0001, this.view.scale),
+      });
+    });
+  }
 
   resize() {
     const box = this.canvas.getBoundingClientRect();
@@ -66,6 +85,7 @@ export class MapRenderer {
       this.view.x = px - before.x * this.view.scale;
       this.view.y = py - before.y * this.view.scale;
       this.draw();
+      this.scheduleViewChange();
     }, { passive: false });
     this.canvas.addEventListener("pointerdown", (event) => {
       this.canvas.setPointerCapture(event.pointerId);
@@ -76,6 +96,7 @@ export class MapRenderer {
       this.view.x = this.drag.vx + event.clientX - this.drag.x;
       this.view.y = this.drag.vy + event.clientY - this.drag.y;
       this.draw();
+      this.scheduleViewChange();
     });
     const end = (event) => { if (this.drag && event.pointerId === this.drag.id) this.drag = null; };
     this.canvas.addEventListener("pointerup", end);
@@ -167,7 +188,8 @@ export class MapRenderer {
     ctx.save(); ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "600 " + size + "px ui-sans-serif,system-ui,sans-serif";
     for (const r of this.world.regions) {
       if (this.view.scale < 0.14 && r.id % 3 !== 0) continue;
-      const label = "R" + String(r.id).padStart(2, "0") + " · " + r.dna.name; const y = r.bounds.y - 16 * inv;
+      const prefix = r.label || ("R" + String(r.id).padStart(2, "0"));
+      const label = prefix + " · " + r.dna.name; const y = r.bounds.y - 16 * inv;
       ctx.lineWidth = 4 * inv; ctx.strokeStyle = "rgba(12,14,16,.9)"; ctx.strokeText(label, r.x, y);
       ctx.fillStyle = "rgba(236,232,221,.86)"; ctx.fillText(label, r.x, y);
     }
@@ -192,7 +214,7 @@ export function worldToSvg(world, options = {}) {
   for (const region of world.regions) {
     for (const c of region.corridors) out.push(svgRect(c, region.dna.color));
     for (const r of region.rooms) out.push(svgRect(r, region.dna.color));
-    if (options.labels !== false) out.push('<text x="' + region.x + '" y="' + (region.bounds.y - 12) + '" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#ede8dc">R' + String(region.id).padStart(2, "0") + ' · ' + region.dna.name + '</text>');
+    if (options.labels !== false) out.push('<text x="' + region.x + '" y="' + (region.bounds.y - 12) + '" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#ede8dc">' + (region.label || ("R" + String(region.id).padStart(2, "0"))) + ' · ' + region.dna.name + '</text>');
   }
   out.push('</svg>'); return out.join("\n");
 }
