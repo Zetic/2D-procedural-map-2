@@ -2,18 +2,19 @@
 
 A zero-dependency GitHub Pages project for generating large, irregular, deterministic 2D Backrooms-style floorplans.
 
-The generator is intentionally split into architectural layers instead of treating chunks or tiles as the design unit:
+The live map is an infinite deterministic spatial field. The viewport loads only a bounded working set:
 
 ```text
-World seed
-  -> deterministic macro topology graph
-  -> deterministic region identities
-  -> architecture DNA per region
-  -> local room/corridor growth grammar
-  -> local loop injection
-  -> cross-region corridor routing
-  -> render/export
+World seed + sector coordinate
+  -> deterministic sector identity
+  -> architecture DNA
+  -> shared deterministic boundary portals
+  -> short internal room/corridor growth
+  -> deterministic cross-sector links
+  -> viewport streaming + render/export
 ```
+
+There is no finite world-region count. Panning into a new sector regenerates the surrounding working set from spatial addresses, so previously visited coordinates reproduce the same geometry without storing the entire world.
 
 ## Determinism
 
@@ -32,11 +33,13 @@ Each macro region is assigned one of several deterministic profiles, including o
 ## Features
 
 - Deterministic world seed and shareable URL parameters
-- Connected macro-region topology with optional loop edges
+- Infinite viewport-addressed generation with stable sector coordinates
+- Order-independent regeneration of previously visited areas
+- Shared boundary portals for deterministic cross-sector continuity
 - Multiple architecture DNA profiles in one map
 - Local spatial room growth with collision rejection
-- Local and cross-region corridors
-- Pan and zoom canvas rendering
+- Short cross-sector connectors instead of long fallback halls
+- Pan-to-stream canvas rendering
 - Region labels, topology debug view, and bounds debug view
 - PNG, SVG, and JSON export
 - Automated determinism/connectivity/geometry tests
@@ -68,12 +71,14 @@ styles.css                 application styling
 src/prng.js                addressable deterministic random functions
 src/dna.js                 architecture DNA profiles
 src/geometry.js            geometry helpers
-src/generator.js           topology + floorplan generation
-src/renderer.js            canvas renderer + SVG export
-src/app.js                 UI state, URL state, exports
-tests/generator.test.js    deterministic generator tests
+src/generator.js           legacy finite reference generator + regression baseline
+src/infinite.js            infinite spatial-sector generation and streaming geometry
+src/renderer.js            canvas renderer + viewport streaming hooks + SVG export
+src/app.js                 streaming UI state, URL state, exports
+tests/generator.test.js    finite regression baseline tests
+tests/infinite.test.js     infinite determinism and spatial invariance tests
 ```
 
 ## Design constraint
 
-Rooms are generated as world architecture first. Rendering is a separate concern. This keeps the model compatible with a future chunk/streaming system where canonical world geometry can be clipped into runtime chunks without allowing chunk load order to change the architecture.
+Rooms are generated from canonical spatial sector addresses rather than from load order. Rendering remains separate. Adjacent sectors derive their shared portal from the same edge address, so moving east-first or west-first cannot alter the canonical architecture at a coordinate.
