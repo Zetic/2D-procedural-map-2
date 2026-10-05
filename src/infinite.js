@@ -242,10 +242,14 @@ function createPortal(seed, site, neighbor, edgeKey, index) {
 }
 
 function createRoot(seed, site, dna, siteScale) {
-  const hall = chance(seed, Math.min(0.36, dna.hallChance * 1.6 + 0.05), "site", site.cellX, site.cellY, "root-hall");
+  const hall = site.mode !== "transit" && chance(seed, Math.min(0.36, dna.hallChance * 1.6 + 0.05), "site", site.cellX, site.cellY, "root-hall");
   const dims = roomDimensions(seed, site.cellX, site.cellY, dna, 0, hall, siteScale);
-  const w = clamp(dims.w, 64, 188);
-  const h = clamp(dims.h, 54, 166);
+  const rootMaxW = site.mode === "transit" ? 96 : 188;
+  const rootMaxH = site.mode === "transit" ? 86 : 166;
+  const rootMinW = site.mode === "transit" ? 42 : 64;
+  const rootMinH = site.mode === "transit" ? 38 : 54;
+  const w = clamp(dims.w, rootMinW, rootMaxW);
+  const h = clamp(dims.h, rootMinH, rootMaxH);
   return {
     ...rect(Math.round(site.x - w / 2), Math.round(site.y - h / 2), Math.round(w), Math.round(h)),
     id: site.key + ":0",
@@ -332,10 +336,11 @@ function growSiteRooms(seed, site, dna, config, siteScale, fixedRooms, reservedC
   const rooms = [...fixedRooms];
   const component = rooms.filter((room) => room.kind !== "portal");
   const corridors = [...reservedCorridors];
-  const minCount = Math.max(7, Math.round(dna.roomCount[0] * 0.74 * config.density));
-  const maxCount = Math.max(minCount, Math.round(dna.roomCount[1] * 0.92 * config.density));
+  const modeFactor = site.mode === "dense" ? 1.08 : site.mode === "transit" ? 0.24 : 0.68;
+  const minCount = Math.max(site.mode === "transit" ? 2 : 5, Math.round(dna.roomCount[0] * 0.74 * config.density * modeFactor));
+  const maxCount = Math.max(minCount, Math.round(dna.roomCount[1] * 0.92 * config.density * modeFactor));
   const target = randInt(seed, minCount, maxCount, "site", site.cellX, site.cellY, "room-count");
-  const maxRadius = site.safeRadius;
+  const maxRadius = site.safeRadius * (site.mode === "dense" ? 1 : site.mode === "transit" ? 0.58 : 0.82);
 
   for (let index = 1; component.length < target; index += 1) {
     let placed = false;
@@ -393,13 +398,16 @@ function generateSite(seed, x, y, config) {
   const key = cellKey(x, y);
   const position = sitePosition(seed, x, y);
   const dna = chooseDna(seed, x, y);
-  const siteScale = randRange(seed, 0.82, 1.22, "site", x, y, "scale");
+  const modeRoll = rand01(seed, "site", x, y, "mass-mode");
+  const mode = modeRoll < 0.48 ? "dense" : modeRoll < 0.84 ? "medium" : "transit";
+  const siteScale = randRange(seed, mode === "dense" ? 0.92 : 0.78, mode === "dense" ? 1.24 : 1.08, "site", x, y, "scale");
   const site = {
     key,
     cellX: x,
     cellY: y,
     x: position.x,
     y: position.y,
+    mode,
     safeRadius: safeSiteRadius(seed, x, y, position),
   };
 
@@ -440,6 +448,7 @@ function generateSite(seed, x, y, config) {
     x: site.x,
     y: site.y,
     dna,
+    mode,
     rooms: grown.rooms,
     corridors: grown.corridors,
     doors: [],
