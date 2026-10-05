@@ -81,7 +81,8 @@ export class MapRenderer {
       const box = this.canvas.getBoundingClientRect();
       const px = event.clientX - box.left; const py = event.clientY - box.top;
       const before = this.screenToWorld(px, py);
-      this.view.scale = Math.max(0.035, Math.min(3.8, this.view.scale * Math.exp(-event.deltaY * 0.0011)));
+      const minScale = this.world?.infinite ? 0.20 : 0.035;
+      this.view.scale = Math.max(minScale, Math.min(3.8, this.view.scale * Math.exp(-event.deltaY * 0.0011)));
       this.view.x = px - before.x * this.view.scale;
       this.view.y = py - before.y * this.view.scale;
       this.draw();
