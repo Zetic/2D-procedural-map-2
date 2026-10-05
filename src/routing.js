@@ -18,23 +18,22 @@ function snap(value, cellSize) {
   return Math.round(value / cellSize);
 }
 
-function gatewayPoint(room, target, width) {
+function gatewayPoint(room, target, width, forcedSide = null) {
   const c = centerOf(room);
   const dx = target.x - c.x;
   const dy = target.y - c.y;
   const half = width / 2;
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    const right = dx >= 0;
-    return {
-      x: right ? room.x + room.w + half : room.x - half,
-      y: clamp(target.y, room.y + half, room.y + room.h - half),
-    };
+  const side = forcedSide ?? (Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 0 : 2) : (dy >= 0 ? 1 : 3));
+  if (side === 0) {
+    return { x: room.x + room.w + half, y: clamp(target.y, room.y + half, room.y + room.h - half) };
   }
-  const down = dy >= 0;
-  return {
-    x: clamp(target.x, room.x + half, room.x + room.w - half),
-    y: down ? room.y + room.h + half : room.y - half,
-  };
+  if (side === 1) {
+    return { x: clamp(target.x, room.x + half, room.x + room.w - half), y: room.y + room.h + half };
+  }
+  if (side === 2) {
+    return { x: room.x - half, y: clamp(target.y, room.y + half, room.y + room.h - half) };
+  }
+  return { x: clamp(target.x, room.x + half, room.x + room.w - half), y: room.y - half };
 }
 
 function rectForSegment(a, b, width, meta) {
@@ -266,28 +265,45 @@ export function routeRoomsObstacleAware({
 }) {
   const ac = centerOf(roomA);
   const bc = centerOf(roomB);
-  const start = gatewayPoint(roomA, bc, width);
-  const end = gatewayPoint(roomB, ac, width);
   const ignoredRoomIds = new Set([roomA.id, roomB.id]);
   const routeMeta = { ...meta, sourceRoomId: roomA.id, targetRoomId: roomB.id };
-
-  for (const candidate of simpleRouteCandidates(start, end, width, routeMeta, seed, routeKey)) {
-    if (!routeIntersectsRooms(candidate, spatialIndex, ignoredRoomIds, 2)) return candidate;
-  }
-
   const cellSize = 18;
-  for (const margin of [180, 320, 560, 920, 1400]) {
-    const bounds = {
-      minX: Math.min(start.x, end.x) - margin,
-      maxX: Math.max(start.x, end.x) + margin,
-      minY: Math.min(start.y, end.y) - margin,
-      maxY: Math.max(start.y, end.y) + margin,
-    };
-    const gridPath = aStar(start, end, width, spatialIndex, ignoredRoomIds, bounds, seed, routeKey, cellSize);
-    if (!gridPath) continue;
-    const points = [start, ...gridPath, end];
-    const route = pointsToRects(points, width, routeMeta);
-    if (!routeIntersectsRooms(route, spatialIndex, ignoredRoomIds, 1)) return route;
+
+  const tryPair = (start, end, suffix, margins) => {
+    for (const candidate of simpleRouteCandidates(start, end, width, routeMeta, seed, routeKey + ":" + suffix)) {
+      if (!routeIntersectsRooms(candidate, spatialIndex, ignoredRoomIds, 2)) return candidate;
+    }
+    for (const margin of margins) {
+      const bounds = {
+        minX: Math.min(start.x, end.x) - margin,
+        maxX: Math.max(start.x, end.x) + margin,
+        minY: Math.min(start.y, end.y) - margin,
+        maxY: Math.max(start.y, end.y) + margin,
+      };
+      const gridPath = aStar(start, end, width, spatialIndex, ignoredRoomIds, bounds, seed, routeKey + ":" + suffix, cellSize);
+      if (!gridPath) continue;
+      const points = [start, ...gridPath, end];
+      const route = pointsToRects(points, width, routeMeta);
+      if (!routeIntersectsRooms(route, spatialIndex, ignoredRoomIds, 1)) return route;
+    }
+    return null;
+  };
+
+  const primaryStart = gatewayPoint(roomA, bc, width);
+  const primaryEnd = gatewayPoint(roomB, ac, width);
+  const primary = tryPair(primaryStart, primaryEnd, "primary", [180, 320, 560, 920, 1400]);
+  if (primary) return primary;
+
+  const sideOrder = chance(seed, 0.5, "route", routeKey, "alternate-order")
+    ? [0, 1, 2, 3]
+    : [2, 3, 0, 1];
+  for (let i = 0; i < sideOrder.length; i += 1) {
+    for (let j = 0; j < sideOrder.length; j += 1) {
+      const start = gatewayPoint(roomA, bc, width, sideOrder[i]);
+      const end = gatewayPoint(roomB, ac, width, sideOrder[j]);
+      const alternate = tryPair(start, end, "alternate-" + sideOrder[i] + "-" + sideOrder[j], [320, 640, 1100, 1700]);
+      if (alternate) return alternate;
+    }
   }
 
   return [];
