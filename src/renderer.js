@@ -118,11 +118,29 @@ export class MapRenderer {
     if (!this.world) return;
     ctx.save(); ctx.translate(this.view.x, this.view.y); ctx.scale(this.view.scale, this.view.scale);
     if (this.options.showGraph) this.drawTopology();
+    const macroColorFor = (edgeKey, edgeText) => {
+      if (edgeText) {
+        const ids = String(edgeText).split(":").map(Number);
+        const a = this.world.regions[ids[0]]; const b = this.world.regions[ids[1]];
+        if (a && b) return blend(a.dna.color, b.dna.color);
+      }
+      if (edgeKey) {
+        const edge = this.world.edges?.find((candidate) => candidate.edgeKey === edgeKey);
+        if (edge) {
+          const a = this.world.regions[edge.a]; const b = this.world.regions[edge.b];
+          if (a && b) return blend(a.dna.color, b.dna.color);
+        }
+      }
+      return "#c9bd9e";
+    };
     for (const c of this.world.macroCorridors) {
-      const ids = String(c.edge || "").split(":").map(Number);
-      const a = this.world.regions[ids[0]]; const b = this.world.regions[ids[1]];
-      const color = a && b ? blend(a.dna.color, b.dna.color) : "#c9bd9e";
+      const color = macroColorFor(c.edgeKey, c.edge);
       this.drawRect(c, adjustColor(color, -13), "rgba(15,17,19,.64)", 2 / this.view.scale);
+    }
+    for (const r of this.world.macroRooms || []) {
+      const color = macroColorFor(r.edgeKey, null);
+      const variance = Math.round(((r.variant ?? 0.5) - 0.5) * 12);
+      this.drawRect(r, adjustColor(color, variance), "rgba(15,17,19,.68)", 1.7 / this.view.scale);
     }
     for (const region of this.world.regions) this.drawRegion(region);
     if (this.options.showBounds) this.drawBounds();
@@ -212,6 +230,7 @@ export function worldToSvg(world, options = {}) {
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + (b.x - p) + ' ' + (b.y - p) + ' ' + (b.w + p * 2) + ' ' + (b.h + p * 2) + '" width="1600" height="1100">'];
   out.push('<rect x="' + (b.x - p) + '" y="' + (b.y - p) + '" width="' + (b.w + p * 2) + '" height="' + (b.h + p * 2) + '" fill="#0c0e10"/>');
   for (const c of world.macroCorridors) out.push(svgRect(c, "#b7aa8c"));
+  for (const r of world.macroRooms || []) out.push(svgRect(r, "#c5b78f"));
   for (const region of world.regions) {
     for (const c of region.corridors) out.push(svgRect(c, region.dna.color));
     for (const r of region.rooms) out.push(svgRect(r, region.dna.color));
