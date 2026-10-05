@@ -284,46 +284,85 @@ function placeRegionRoot(seed, region, parent, occupiedRooms, reservedCorridors)
     };
   }
 
-  const direction = sideVector(primarySide);
-  const parentBounds = parent.bounds;
-  const boundaryCandidates = chooseParentBoundaryRooms(parent, dx, dy).slice(0, Math.min(8, parent.rooms.length));
+  // Deterministic exhaustive attachment pass. This is deliberately preferred over
+  // pushing a region far away: the reference layout is a compact, grafted network.
   const fallbackWidth = Math.round(randRange(seed, dna.corridor[0], dna.corridor[1], "region", region.id, "fallback-entry-width"));
-  for (let ring = 1; ring <= 80; ring += 1) {
-    const distance = Math.max(parentBounds.w, parentBounds.h) / 2 + 90 + ring * 34;
-    const lateral = signed(seed, 80 + ring * 8, "region", region.id, "fallback-lateral", ring);
-    let cx = parent.x + direction[0] * distance;
-    let cy = parent.y + direction[1] * distance;
-    if (direction[0] !== 0) cy += lateral;
-    else cx += lateral;
-    const candidate = rect(Math.round(cx - dims.w / 2), Math.round(cy - dims.h / 2), dims.w, dims.h, rootMeta);
+  const sideOrder = [
+    primarySide,
+    (primarySide + 1) % 4,
+    (primarySide + 3) % 4,
+    (primarySide + 2) % 4,
+  ];
+  const gapOptions = [
+    2,
+    Math.max(10, Math.round(dna.gap[0])),
+    Math.max(20, Math.round((dna.gap[0] + dna.gap[1]) * 0.38)),
+    Math.max(34, Math.round(dna.gap[1] * 0.72)),
+    Math.max(52, Math.round(dna.gap[1])),
+  ];
+  const scaleOptions = rootHall ? [1, 0.84, 0.68] : [1, 0.88, 0.74];
+  const offsetFractions = [0, -0.18, 0.18, -0.34, 0.34];
+
+  for (const scale of scaleOptions) {
+    const fallbackW = Math.max(30, Math.round(dims.w * scale));
+    const fallbackH = Math.max(28, Math.round(dims.h * scale));
+    for (const anchor of boundaryRooms) {
+      for (const side of sideOrder) {
+        const offsetBase = side === 0 || side === 2 ? fallbackH : fallbackW;
+        for (const gap of gapOptions) {
+          for (const fraction of offsetFractions) {
+            const candidate = {
+              ...placeRectBySide(anchor, side, fallbackW, fallbackH, gap, offsetBase * fraction),
+              ...rootMeta,
+            };
+            if (roomHitsRooms(candidate, occupiedRooms, anchor.id, 5)) continue;
+            if (rectHitsAny(candidate, reservedCorridors, 3)) continue;
+            const corridor = makeAttachmentConnector(anchor, candidate, side, fallbackWidth, {
+              regionId: -1,
+              kind: "macro-corridor",
+              edge: parent.id + ":" + region.id,
+              edgeType: "tree",
+              sourceRoomId: anchor.id,
+              targetRoomId: candidate.id,
+            });
+            if (corridorHitsRooms([corridor], occupiedRooms, new Set([anchor.id]))) continue;
+            return {
+              room: candidate,
+              entryCorridors: [corridor],
+              parentAnchorId: anchor.id,
+              growthSide: side,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // Rare escape hatch: place the root just outside the current global footprint.
+  // This preserves the occasional long tendril visible in the reference while keeping
+  // the common case tightly packed. Final tree routing will connect it obstacle-aware.
+  const globalBounds = boundsOfRects(occupiedRooms);
+  for (let ring = 0; ring < 120; ring += 1) {
+    const outward = 70 + ring * 26;
+    const lateral = signed(seed, 90 + ring * 5, "region", region.id, "exterior-lateral", ring);
+    let candidate;
+    if (primarySide === 0) {
+      candidate = rect(globalBounds.x + globalBounds.w + outward, parent.y - dims.h / 2 + lateral, dims.w, dims.h, rootMeta);
+    } else if (primarySide === 1) {
+      candidate = rect(parent.x - dims.w / 2 + lateral, globalBounds.y + globalBounds.h + outward, dims.w, dims.h, rootMeta);
+    } else if (primarySide === 2) {
+      candidate = rect(globalBounds.x - outward - dims.w, parent.y - dims.h / 2 + lateral, dims.w, dims.h, rootMeta);
+    } else {
+      candidate = rect(parent.x - dims.w / 2 + lateral, globalBounds.y - outward - dims.h, dims.w, dims.h, rootMeta);
+    }
     if (roomHitsRooms(candidate, occupiedRooms, null, 8)) continue;
     if (rectHitsAny(candidate, reservedCorridors, 5)) continue;
-
-    const spatialIndex = buildRoomSpatialIndex(occupiedRooms);
-    for (const anchor of boundaryCandidates) {
-      const route = routeRoomsObstacleAware({
-        seed,
-        routeKey: parent.id + ":" + region.id + ":fallback:" + anchor.id,
-        roomA: anchor,
-        roomB: candidate,
-        width: fallbackWidth,
-        spatialIndex,
-        aggressive: true,
-        meta: {
-          regionId: -1,
-          kind: "macro-corridor",
-          edge: parent.id + ":" + region.id,
-          edgeType: "tree",
-        },
-      });
-      if (!route.length) continue;
-      return {
-        room: candidate,
-        entryCorridors: route,
-        parentAnchorId: anchor.id,
-        growthSide: primarySide,
-      };
-    }
+    return {
+      room: candidate,
+      entryCorridors: [],
+      parentAnchorId: null,
+      growthSide: primarySide,
+    };
   }
 
   throw new Error("Unable to place deterministic root room for region " + region.id);
@@ -426,6 +465,53 @@ function findRoomById(regions, id) {
   return null;
 }
 
+function rankedRoomPairs(regionA, regionB, limit = 24) {
+  const pairs = [];
+  for (const roomA of regionA.rooms) {
+    const ac = centerOf(roomA);
+    for (const roomB of regionB.rooms) {
+      const bc = centerOf(roomB);
+      pairs.push({
+        a: roomA,
+        b: roomB,
+        distance: Math.hypot(bc.x - ac.x, bc.y - ac.y),
+      });
+    }
+  }
+  pairs.sort((left, right) =>
+    left.distance - right.distance ||
+    left.a.id.localeCompare(right.a.id) ||
+    left.b.id.localeCompare(right.b.id)
+  );
+  return pairs.slice(0, limit).map((pair) => [pair.a, pair.b]);
+}
+
+function pushUniquePair(target, seen, roomA, roomB) {
+  if (!roomA || !roomB) return;
+  const pairKey = roomA.id + "|" + roomB.id;
+  if (seen.has(pairKey)) return;
+  seen.add(pairKey);
+  target.push([roomA, roomB]);
+}
+
+function treeRoutePairs(regionA, regionB, child, parent, regions) {
+  const pairs = [];
+  const seen = new Set();
+  const childRoot = child.rooms[0];
+  const parentAnchor = child.parentAnchorId ? findRoomById(regions, child.parentAnchorId) : null;
+  pushUniquePair(pairs, seen, parentAnchor, childRoot);
+
+  const dx = child.x - parent.x;
+  const dy = child.y - parent.y;
+  const boundaryParents = chooseParentBoundaryRooms(parent, dx, dy).slice(0, 12);
+  for (const parentRoom of boundaryParents) pushUniquePair(pairs, seen, parentRoom, childRoot);
+
+  for (const [roomA, roomB] of rankedRoomPairs(regionA, regionB, 28)) {
+    pushUniquePair(pairs, seen, roomA, roomB);
+  }
+  return pairs;
+}
+
 function connectRegions(seed, grownRegions, edges) {
   const rooms = grownRegions.flatMap((region) => region.rooms);
   const spatialIndex = buildRoomSpatialIndex(rooms);
@@ -443,21 +529,12 @@ function connectRegions(seed, grownRegions, edges) {
   for (const edge of edges) {
     const regionA = grownRegions[edge.a];
     const regionB = grownRegions[edge.b];
-    if (edge.type === "tree" && regionB.parentId === edge.a && regionB.entryCorridors?.length) continue;
-    if (edge.type === "tree" && regionA.parentId === edge.b && regionA.entryCorridors?.length) continue;
-
-    let pair = null;
-    if (edge.type === "tree") {
-      const child = regionB.parentId === edge.a ? regionB : regionA;
-      const parent = child === regionB ? regionA : regionB;
-      const childRoot = child.rooms[0];
-      const parentRoom = child.parentAnchorId ? findRoomById(grownRegions, child.parentAnchorId) : null;
-      pair = parentRoom ? [parentRoom, childRoot] : nearestRectPair(parent.rooms, child.rooms);
-    } else {
-      pair = nearestRectPair(regionA.rooms, regionB.rooms);
+    if (edge.type === "tree" && regionB.parentId === edge.a && regionB.entryCorridors?.length) {
+      edge.routed = true;
+      continue;
     }
-    if (!pair) {
-      edge.routed = false;
+    if (edge.type === "tree" && regionA.parentId === edge.b && regionA.entryCorridors?.length) {
+      edge.routed = true;
       continue;
     }
 
@@ -465,25 +542,71 @@ function connectRegions(seed, grownRegions, edges) {
     const widthB = (regionB.dna.corridor[0] + regionB.dna.corridor[1]) / 2;
     const width = Math.round(Math.max(14, Math.min(28, (widthA + widthB) / 2)));
     const routeKey = Math.min(edge.a, edge.b) + ":" + Math.max(edge.a, edge.b) + ":" + edge.type;
-    const route = routeRoomsObstacleAware({
-      seed,
-      routeKey,
-      roomA: pair[0],
-      roomB: pair[1],
-      width,
-      spatialIndex,
-      aggressive: edge.type === "tree",
-      meta: {
-        regionId: -1,
-        kind: "macro-corridor",
-        edge: edge.a + ":" + edge.b,
-        edgeType: edge.type,
-      },
-    });
+
+    let candidates;
+    if (edge.type === "tree") {
+      const child = regionB.parentId === edge.a ? regionB : regionA;
+      const parent = child === regionB ? regionA : regionB;
+      candidates = treeRoutePairs(regionA, regionB, child, parent, grownRegions);
+    } else {
+      const nearest = nearestRectPair(regionA.rooms, regionB.rooms);
+      candidates = nearest ? [nearest] : [];
+    }
+
+    let route = [];
+    // Fast attempts over several geometrically sensible room pairs first.
+    for (let pairIndex = 0; pairIndex < candidates.length; pairIndex += 1) {
+      const pair = candidates[pairIndex];
+      route = routeRoomsObstacleAware({
+        seed,
+        routeKey: routeKey + ":pair:" + pairIndex,
+        roomA: pair[0],
+        roomB: pair[1],
+        width,
+        spatialIndex,
+        aggressive: false,
+        meta: {
+          regionId: -1,
+          kind: "macro-corridor",
+          edge: edge.a + ":" + edge.b,
+          edgeType: edge.type,
+        },
+      });
+      if (route.length) break;
+      if (edge.type === "loop") break;
+    }
+
+    // A tree edge is structural, so it gets a bounded aggressive retry over the
+    // best candidate pairs. Loop edges are optional and may be omitted cleanly.
+    if (!route.length && edge.type === "tree") {
+      const aggressiveCount = Math.min(8, candidates.length);
+      for (let pairIndex = 0; pairIndex < aggressiveCount; pairIndex += 1) {
+        const pair = candidates[pairIndex];
+        route = routeRoomsObstacleAware({
+          seed,
+          routeKey: routeKey + ":aggressive:" + pairIndex,
+          roomA: pair[0],
+          roomB: pair[1],
+          width,
+          spatialIndex,
+          aggressive: true,
+          meta: {
+            regionId: -1,
+            kind: "macro-corridor",
+            edge: edge.a + ":" + edge.b,
+            edgeType: edge.type,
+          },
+        });
+        if (route.length) break;
+      }
+    }
+
     if (!route.length) {
       edge.routed = false;
       continue;
     }
+
+    edge.routed = true;
     route.forEach((segment, index) => {
       segment.id = "macro:" + Math.min(edge.a, edge.b) + ":" + Math.max(edge.a, edge.b) + ":" + index;
     });
