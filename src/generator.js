@@ -494,6 +494,32 @@ function pushUniquePair(target, seen, roomA, roomB) {
   target.push([roomA, roomB]);
 }
 
+function extremeRooms(region) {
+  const rooms = region.rooms;
+  if (!rooms.length) return [];
+  const selectors = [
+    (room) => room.x,
+    (room) => -(room.x + room.w),
+    (room) => room.y,
+    (room) => -(room.y + room.h),
+    (room) => room.x + room.y,
+    (room) => -(room.x + room.w + room.y + room.h),
+    (room) => room.x - (room.y + room.h),
+    (room) => room.y - (room.x + room.w),
+  ];
+  const result = [];
+  const seen = new Set();
+  for (const selector of selectors) {
+    const sorted = [...rooms].sort((a, b) => selector(a) - selector(b) || a.id.localeCompare(b.id));
+    const room = sorted[0];
+    if (room && !seen.has(room.id)) {
+      seen.add(room.id);
+      result.push(room);
+    }
+  }
+  return result;
+}
+
 function treeRoutePairs(regionA, regionB, child, parent, regions) {
   const pairs = [];
   const seen = new Set();
@@ -506,7 +532,20 @@ function treeRoutePairs(regionA, regionB, child, parent, regions) {
   const boundaryParents = chooseParentBoundaryRooms(parent, dx, dy).slice(0, 12);
   for (const parentRoom of boundaryParents) pushUniquePair(pairs, seen, parentRoom, childRoot);
 
-  for (const [roomA, roomB] of rankedRoomPairs(regionA, regionB, 28)) {
+  const extremesA = extremeRooms(regionA);
+  const extremesB = extremeRooms(regionB);
+  const extremePairs = [];
+  for (const roomA of extremesA) {
+    const ac = centerOf(roomA);
+    for (const roomB of extremesB) {
+      const bc = centerOf(roomB);
+      extremePairs.push({ roomA, roomB, distance: Math.hypot(bc.x - ac.x, bc.y - ac.y) });
+    }
+  }
+  extremePairs.sort((a, b) => a.distance - b.distance || a.roomA.id.localeCompare(b.roomA.id) || a.roomB.id.localeCompare(b.roomB.id));
+  for (const pair of extremePairs) pushUniquePair(pairs, seen, pair.roomA, pair.roomB);
+
+  for (const [roomA, roomB] of rankedRoomPairs(regionA, regionB, 36)) {
     pushUniquePair(pairs, seen, roomA, roomB);
   }
   return pairs;
@@ -579,7 +618,7 @@ function connectRegions(seed, grownRegions, edges) {
     // A tree edge is structural, so it gets a bounded aggressive retry over the
     // best candidate pairs. Loop edges are optional and may be omitted cleanly.
     if (!route.length && edge.type === "tree") {
-      const aggressiveCount = Math.min(8, candidates.length);
+      const aggressiveCount = Math.min(20, candidates.length);
       for (let pairIndex = 0; pairIndex < aggressiveCount; pairIndex += 1) {
         const pair = candidates[pairIndex];
         route = routeRoomsObstacleAware({
@@ -598,6 +637,30 @@ function connectRegions(seed, grownRegions, edges) {
           },
         });
         if (route.length) break;
+      }
+
+      if (!route.length) {
+        const narrowWidth = Math.max(8, Math.min(12, width - 4));
+        const narrowCount = Math.min(28, candidates.length);
+        for (let pairIndex = 0; pairIndex < narrowCount; pairIndex += 1) {
+          const pair = candidates[pairIndex];
+          route = routeRoomsObstacleAware({
+            seed,
+            routeKey: routeKey + ":narrow:" + pairIndex,
+            roomA: pair[0],
+            roomB: pair[1],
+            width: narrowWidth,
+            spatialIndex,
+            aggressive: true,
+            meta: {
+              regionId: -1,
+              kind: "macro-corridor",
+              edge: edge.a + ":" + edge.b,
+              edgeType: edge.type,
+            },
+          });
+          if (route.length) break;
+        }
       }
     }
 
