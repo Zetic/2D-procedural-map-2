@@ -262,6 +262,7 @@ export function routeRoomsObstacleAware({
   width,
   spatialIndex,
   meta = {},
+  aggressive = false,
 }) {
   const ac = centerOf(roomA);
   const bc = centerOf(roomB);
@@ -291,8 +292,9 @@ export function routeRoomsObstacleAware({
 
   const primaryStart = gatewayPoint(roomA, bc, width);
   const primaryEnd = gatewayPoint(roomB, ac, width);
-  const primary = tryPair(primaryStart, primaryEnd, "primary", [180, 320, 560, 920, 1400]);
+  const primary = tryPair(primaryStart, primaryEnd, "primary", aggressive ? [180, 320, 560, 920, 1400] : [160, 300, 520]);
   if (primary) return primary;
+  if (!aggressive) return [];
 
   const sideOrder = chance(seed, 0.5, "route", routeKey, "alternate-order")
     ? [0, 1, 2, 3]
