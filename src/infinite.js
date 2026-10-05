@@ -1,17 +1,27 @@
 import { ARCHITECTURE_DNA } from "./dna.js";
 import { addressSeed, chance, rand01, randInt, randRange, signed } from "./prng.js";
 import { boundsOfRects, centerOf, inflate, intersects, rect, unionBounds } from "./geometry.js";
-import { buildRoomSpatialIndex, routeRoomsObstacleAware } from "./routing.js";
 
-export const INFINITE_SECTOR_SIZE = 360;
+export const INFINITE_SECTOR_SIZE = 780;
 
 export const DEFAULT_INFINITE_CONFIG = Object.freeze({
   density: 1,
   loopChance: 0.18,
   centerX: 0,
   centerY: 0,
-  radius: 3,
+  radius: 2,
 });
+
+const NEIGHBORS = [
+  { dx: 1, dy: 0 },
+  { dx: 0, dy: 1 },
+  { dx: -1, dy: 0 },
+  { dx: 0, dy: -1 },
+  { dx: 1, dy: 1 },
+  { dx: -1, dy: 1 },
+  { dx: -1, dy: -1 },
+  { dx: 1, dy: -1 },
+];
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -23,7 +33,7 @@ function normalizeConfig(config = {}) {
     loopChance: clamp(Number(config.loopChance ?? DEFAULT_INFINITE_CONFIG.loopChance), 0, 0.5),
     centerX: Math.trunc(Number(config.centerX ?? DEFAULT_INFINITE_CONFIG.centerX) || 0),
     centerY: Math.trunc(Number(config.centerY ?? DEFAULT_INFINITE_CONFIG.centerY) || 0),
-    radius: clamp(Math.round(Number(config.radius ?? DEFAULT_INFINITE_CONFIG.radius) || 3), 1, 7),
+    radius: clamp(Math.round(Number(config.radius ?? DEFAULT_INFINITE_CONFIG.radius) || 2), 1, 6),
   };
 }
 
@@ -31,24 +41,57 @@ function cellKey(x, y) {
   return x + "," + y;
 }
 
-function chooseDna(seed, x, y) {
-  return ARCHITECTURE_DNA[randInt(seed, 0, ARCHITECTURE_DNA.length - 1, "sector", x, y, "dna")];
-}
-
-function parentCell(seed, x, y) {
-  if (x === 0 && y === 0) return null;
-  const ax = Math.abs(x);
-  const ay = Math.abs(y);
-  if (ax > ay) return { x: x - Math.sign(x), y };
-  if (ay > ax) return { x, y: y - Math.sign(y) };
-  if (chance(seed, 0.5, "sector", x, y, "parent-axis")) return { x: x - Math.sign(x), y };
-  return { x, y: y - Math.sign(y) };
-}
-
 function canonicalEdge(ax, ay, bx, by) {
   const a = cellKey(ax, ay);
   const b = cellKey(bx, by);
   return a < b ? a + "|" + b : b + "|" + a;
+}
+
+function parseEdge(edgeKey) {
+  const [a, b] = edgeKey.split("|");
+  const [ax, ay] = a.split(",").map(Number);
+  const [bx, by] = b.split(",").map(Number);
+  return { ax, ay, bx, by };
+}
+
+function sitePosition(seed, x, y) {
+  const jitter = INFINITE_SECTOR_SIZE * 0.22;
+  const warpX = signed(seed, jitter, "site", x, y, "jitter-x");
+  const warpY = signed(seed, jitter, "site", x, y, "jitter-y");
+  const lowX = signed(seed, 72, "zone-warp", Math.floor(x / 3), Math.floor(y / 3), "x");
+  const lowY = signed(seed, 72, "zone-warp", Math.floor(x / 3), Math.floor(y / 3), "y");
+  return {
+    x: x * INFINITE_SECTOR_SIZE + warpX + lowX,
+    y: y * INFINITE_SECTOR_SIZE + warpY + lowY,
+  };
+}
+
+function chooseDna(seed, x, y) {
+  // Large DNA neighborhoods make several adjacent sites read as one architectural wing.
+  const zx = Math.floor((x + 1) / 3);
+  const zy = Math.floor((y - 1) / 3);
+  let index = randInt(seed, 0, ARCHITECTURE_DNA.length - 1, "dna-zone", zx, zy);
+  if (chance(seed, 0.18, "site", x, y, "dna-mutation")) {
+    index = randInt(seed, 0, ARCHITECTURE_DNA.length - 1, "site", x, y, "dna");
+  }
+  return ARCHITECTURE_DNA[index];
+}
+
+function parentCell(seed, x, y) {
+  if (x === 0 && y === 0) return null;
+  const sx = Math.sign(x);
+  const sy = Math.sign(y);
+
+  if (x !== 0 && y !== 0 && chance(seed, 0.56, "site", x, y, "diagonal-parent")) {
+    return { x: x - sx, y: y - sy };
+  }
+
+  const ax = Math.abs(x);
+  const ay = Math.abs(y);
+  if (ax > ay) return { x: x - sx, y };
+  if (ay > ax) return { x, y: y - sy };
+  if (chance(seed, 0.5, "site", x, y, "parent-axis")) return { x: x - sx, y };
+  return { x, y: y - sy };
 }
 
 function isParentLink(seed, ax, ay, bx, by) {
@@ -59,56 +102,39 @@ function isParentLink(seed, ax, ay, bx, by) {
 }
 
 function edgeIsActive(seed, ax, ay, bx, by, loopChance) {
-  if (Math.abs(ax - bx) + Math.abs(ay - by) !== 1) return false;
+  const dx = Math.abs(ax - bx);
+  const dy = Math.abs(ay - by);
+  if (dx > 1 || dy > 1 || (dx === 0 && dy === 0)) return false;
   if (isParentLink(seed, ax, ay, bx, by)) return true;
-  const p = clamp(0.10 + loopChance * 1.1, 0.10, 0.58);
-  return chance(seed, p, "edge", canonicalEdge(ax, ay, bx, by), "loop");
+
+  const diagonal = dx === 1 && dy === 1;
+  const probability = diagonal
+    ? clamp(0.025 + loopChance * 0.22, 0.025, 0.13)
+    : clamp(0.05 + loopChance * 0.52, 0.05, 0.30);
+  return chance(seed, probability, "edge", canonicalEdge(ax, ay, bx, by), "loop");
 }
 
 function edgeType(seed, ax, ay, bx, by) {
   return isParentLink(seed, ax, ay, bx, by) ? "tree" : "loop";
 }
 
-function activeSides(seed, x, y, loopChance) {
-  const neighbors = [
-    { side: 0, x: x + 1, y },
-    { side: 1, x, y: y + 1 },
-    { side: 2, x: x - 1, y },
-    { side: 3, x, y: y - 1 },
-  ];
-  return neighbors.filter((n) => edgeIsActive(seed, x, y, n.x, n.y, loopChance));
+function activeNeighbors(seed, x, y, loopChance) {
+  return NEIGHBORS
+    .map(({ dx, dy }) => ({ x: x + dx, y: y + dy }))
+    .filter((n) => edgeIsActive(seed, x, y, n.x, n.y, loopChance));
 }
 
-function roomDimensions(seed, x, y, dna, index, hall = false) {
-  const scale = hall ? randRange(seed, 1.20, 1.62, "sector-room", x, y, index, "hall-scale") : 1;
+function hitsAny(candidate, rectangles, ignoredIds = new Set(), padding = 0) {
+  const probe = padding ? inflate(candidate, padding) : candidate;
+  return rectangles.some((other) => !ignoredIds.has(other.id) && intersects(probe, other));
+}
+
+function roomDimensions(seed, x, y, dna, index, hall = false, siteScale = 1) {
+  const hallScale = hall ? randRange(seed, 1.22, 1.72, "room", x, y, index, "hall-scale") : 1;
   return {
-    w: Math.round(randRange(seed, dna.roomW[0], dna.roomW[1], "sector-room", x, y, index, "w") * scale),
-    h: Math.round(randRange(seed, dna.roomH[0], dna.roomH[1], "sector-room", x, y, index, "h") * scale),
+    w: Math.round(randRange(seed, dna.roomW[0], dna.roomW[1], "room", x, y, index, "w") * hallScale * siteScale),
+    h: Math.round(randRange(seed, dna.roomH[0], dna.roomH[1], "room", x, y, index, "h") * hallScale * siteScale),
   };
-}
-
-function within(rectangle, bounds, padding = 0) {
-  return rectangle.x >= bounds.x + padding &&
-    rectangle.y >= bounds.y + padding &&
-    rectangle.x + rectangle.w <= bounds.x + bounds.w - padding &&
-    rectangle.y + rectangle.h <= bounds.y + bounds.h - padding;
-}
-
-function hitsAny(rectangle, rectangles, ignoredId = null, padding = 0) {
-  const probe = padding ? inflate(rectangle, padding) : rectangle;
-  return rectangles.some((other) => other.id !== ignoredId && intersects(probe, other));
-}
-
-function hitsCorridors(rectangle, corridors, padding = 0) {
-  const probe = padding ? inflate(rectangle, padding) : rectangle;
-  return corridors.some((other) => intersects(probe, other));
-}
-
-function sideVector(side) {
-  if (side === 0) return [1, 0];
-  if (side === 1) return [0, 1];
-  if (side === 2) return [-1, 0];
-  return [0, -1];
 }
 
 function placeAttached(anchor, side, w, h, gap, offset) {
@@ -127,310 +153,417 @@ function attachmentConnector(anchor, room, side, width, meta = {}) {
     const right = side === 0 ? room : anchor;
     const top = Math.max(anchor.y, room.y);
     const bottom = Math.min(anchor.y + anchor.h, room.y + room.h);
-    const actualWidth = Math.max(6, Math.min(width, Math.max(6, bottom - top)));
-    const y = clamp((ac.y + rc.y) / 2, top + actualWidth / 2, bottom - actualWidth / 2);
+    const usable = Math.max(7, bottom - top);
+    const actualWidth = Math.min(width, usable);
+    const y = top <= bottom
+      ? clamp((ac.y + rc.y) / 2, top + actualWidth / 2, bottom - actualWidth / 2)
+      : (ac.y + rc.y) / 2;
     return rect(left.x + left.w, y - actualWidth / 2, Math.max(1, right.x - left.x - left.w), actualWidth, meta);
   }
+
   const top = side === 1 ? anchor : room;
   const bottom = side === 1 ? room : anchor;
   const left = Math.max(anchor.x, room.x);
   const right = Math.min(anchor.x + anchor.w, room.x + room.w);
-  const actualWidth = Math.max(6, Math.min(width, Math.max(6, right - left)));
-  const x = clamp((ac.x + rc.x) / 2, left + actualWidth / 2, right - actualWidth / 2);
+  const usable = Math.max(7, right - left);
+  const actualWidth = Math.min(width, usable);
+  const x = left <= right
+    ? clamp((ac.x + rc.x) / 2, left + actualWidth / 2, right - actualWidth / 2)
+    : (ac.x + rc.x) / 2;
   return rect(x - actualWidth / 2, top.y + top.h, actualWidth, Math.max(1, bottom.y - top.y - top.h), meta);
 }
 
-function portalForSide(seed, x, y, side, sectorBounds, regionKey) {
-  const neighbor = side === 0 ? [x + 1, y] : side === 1 ? [x, y + 1] : side === 2 ? [x - 1, y] : [x, y - 1];
-  const edge = canonicalEdge(x, y, neighbor[0], neighbor[1]);
-  const tangent = randRange(seed, 0.31, 0.69, "edge", edge, "portal-offset");
-  const normal = 46;
-  const tangential = 58;
-  const inset = 8;
-  let r;
-  if (side === 0) {
-    r = rect(sectorBounds.x + sectorBounds.w - inset - normal, sectorBounds.y + tangent * sectorBounds.h - tangential / 2, normal, tangential);
-  } else if (side === 1) {
-    r = rect(sectorBounds.x + tangent * sectorBounds.w - tangential / 2, sectorBounds.y + sectorBounds.h - inset - normal, tangential, normal);
-  } else if (side === 2) {
-    r = rect(sectorBounds.x + inset, sectorBounds.y + tangent * sectorBounds.h - tangential / 2, normal, tangential);
+function orthogonalConnect(a, b, width, meta, seed, key) {
+  const ac = centerOf(a);
+  const bc = centerOf(b);
+  const horizontalFirst = chance(seed, 0.5, "short-route", key, "axis");
+  const result = [];
+  const half = width / 2;
+
+  if (horizontalFirst) {
+    const minX = Math.min(ac.x, bc.x);
+    const maxX = Math.max(ac.x, bc.x);
+    result.push(rect(minX, ac.y - half, Math.max(width, maxX - minX), width, meta));
+    const minY = Math.min(ac.y, bc.y);
+    const maxY = Math.max(ac.y, bc.y);
+    result.push(rect(bc.x - half, minY, width, Math.max(width, maxY - minY), meta));
   } else {
-    r = rect(sectorBounds.x + tangent * sectorBounds.w - tangential / 2, sectorBounds.y + inset, tangential, normal);
+    const minY = Math.min(ac.y, bc.y);
+    const maxY = Math.max(ac.y, bc.y);
+    result.push(rect(ac.x - half, minY, width, Math.max(width, maxY - minY), meta));
+    const minX = Math.min(ac.x, bc.x);
+    const maxX = Math.max(ac.x, bc.x);
+    result.push(rect(minX, bc.y - half, Math.max(width, maxX - minX), width, meta));
   }
+
+  return result.filter((segment) => segment.w > 0 && segment.h > 0);
+}
+
+function createPortal(seed, site, neighbor, edgeKey, index) {
+  const target = sitePosition(seed, neighbor.x, neighbor.y);
+  const dx = target.x - site.x;
+  const dy = target.y - site.y;
+  const length = Math.max(1, Math.hypot(dx, dy));
+  const nx = dx / length;
+  const ny = dy / length;
+  const px = -ny;
+  const py = nx;
+  const radius = randRange(seed, 176, 242, "edge", edgeKey, site.key, "portal-radius");
+  const lateral = signed(seed, 52, "edge", edgeKey, site.key, "portal-lateral");
+  const w = randInt(seed, 42, 76, "edge", edgeKey, site.key, "portal-w");
+  const h = randInt(seed, 36, 70, "edge", edgeKey, site.key, "portal-h");
+  const cx = site.x + nx * radius + px * lateral;
+  const cy = site.y + ny * radius + py * lateral;
   return {
-    ...r,
-    id: regionKey + ":portal:" + side,
-    regionKey,
-    regionId: -1,
+    ...rect(Math.round(cx - w / 2), Math.round(cy - h / 2), w, h),
+    id: site.key + ":portal:" + index,
+    siteKey: site.key,
+    regionKey: site.key,
     kind: "portal",
-    variant: rand01(seed, "edge", edge, "portal-variant"),
-    portalSide: side,
-    edge,
+    variant: rand01(seed, "edge", edgeKey, site.key, "portal-variant"),
+    edgeKey,
+    neighborKey: cellKey(neighbor.x, neighbor.y),
   };
 }
 
-function createRoot(seed, x, y, dna, sectorBounds, regionKey) {
-  const hall = chance(seed, Math.min(0.32, dna.hallChance * 1.45 + 0.04), "sector", x, y, "root-hall");
-  const dims = roomDimensions(seed, x, y, dna, 0, hall);
-  const maxW = Math.min(150, sectorBounds.w * 0.42);
-  const maxH = Math.min(140, sectorBounds.h * 0.40);
-  const w = clamp(dims.w, 62, maxW);
-  const h = clamp(dims.h, 54, maxH);
-  const cx = sectorBounds.x + sectorBounds.w / 2 + signed(seed, 34, "sector", x, y, "root-x");
-  const cy = sectorBounds.y + sectorBounds.h / 2 + signed(seed, 34, "sector", x, y, "root-y");
+function createRoot(seed, site, dna, siteScale) {
+  const hall = chance(seed, Math.min(0.36, dna.hallChance * 1.6 + 0.05), "site", site.cellX, site.cellY, "root-hall");
+  const dims = roomDimensions(seed, site.cellX, site.cellY, dna, 0, hall, siteScale);
+  const w = clamp(dims.w, 64, 188);
+  const h = clamp(dims.h, 54, 166);
   return {
-    ...rect(Math.round(cx - w / 2), Math.round(cy - h / 2), Math.round(w), Math.round(h)),
-    id: regionKey + ":0",
-    regionKey,
+    ...rect(Math.round(site.x - w / 2), Math.round(site.y - h / 2), Math.round(w), Math.round(h)),
+    id: site.key + ":0",
+    siteKey: site.key,
+    regionKey: site.key,
     kind: hall ? "hall" : "room",
-    variant: rand01(seed, "sector", x, y, "root-variant"),
+    variant: rand01(seed, "site", site.cellX, site.cellY, "root-variant"),
   };
 }
 
-function waypointRoom(seed, x, y, regionKey, from, to, ordinal, occupied, sectorBounds) {
+function safeWaypoint(seed, site, from, to, ordinal, occupied) {
   const a = centerOf(from);
   const b = centerOf(to);
-  const distance = Math.hypot(b.x - a.x, b.y - a.y);
-  if (distance < 118) return null;
-  const t = 0.50;
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  const length = Math.max(1, Math.hypot(dx, dy));
-  const px = -dy / length;
-  const py = dx / length;
-  const baseJitter = signed(seed, 24, "sector", x, y, "waypoint-jitter", ordinal, to.id);
-  const jitters = [baseJitter, -baseJitter, 0, baseJitter * 0.45, -baseJitter * 0.45];
-  for (const jitter of jitters) {
-    const size = 34;
-    const cx = a.x + dx * t + px * jitter;
-    const cy = a.y + dy * t + py * jitter;
+  const distance = Math.hypot(dx, dy);
+  if (distance < 126) return null;
+
+  const len = Math.max(1, distance);
+  const px = -dy / len;
+  const py = dx / len;
+  const size = randInt(seed, 30, 48, "site", site.cellX, site.cellY, "waypoint-size", ordinal, to.id);
+  const base = signed(seed, 30, "site", site.cellX, site.cellY, "waypoint-offset", ordinal, to.id);
+  for (const lateral of [base, -base, 0, base * 0.45, -base * 0.45]) {
+    const t = randRange(seed, 0.42, 0.58, "site", site.cellX, site.cellY, "waypoint-t", ordinal, to.id);
+    const cx = a.x + dx * t + px * lateral;
+    const cy = a.y + dy * t + py * lateral;
     const candidate = {
       ...rect(Math.round(cx - size / 2), Math.round(cy - size / 2), size, size),
-      id: regionKey + ":junction:" + ordinal,
-      regionKey,
+      id: site.key + ":junction:" + ordinal,
+      siteKey: site.key,
+      regionKey: site.key,
       kind: "junction",
-      variant: rand01(seed, "sector", x, y, "junction-variant", ordinal),
+      variant: rand01(seed, "site", site.cellX, site.cellY, "waypoint-variant", ordinal),
     };
-    if (!within(candidate, sectorBounds, 12)) continue;
-    if (hitsAny(candidate, occupied, null, 8)) continue;
-    return candidate;
+    if (!hitsAny(candidate, occupied, new Set([from.id, to.id]), 6)) return candidate;
   }
   return null;
 }
 
-function buildReservedRoutes(seed, x, y, regionKey, root, portals, rooms, dna) {
-  const routes = [];
-  let junctionIndex = 0;
-  const chains = [];
+function routeSiteSkeleton(seed, site, dna, root, portals, rooms) {
+  const corridors = [];
+  const width = Math.round(clamp((dna.corridor[0] + dna.corridor[1]) / 2, 11, 22));
+  let junctionOrdinal = 0;
 
-  for (const portal of portals) {
+  for (let i = 0; i < portals.length; i += 1) {
+    const portal = portals[i];
     const chain = [root];
-    const waypoint = waypointRoom(seed, x, y, regionKey, root, portal, junctionIndex, rooms, {
-      x: x * INFINITE_SECTOR_SIZE,
-      y: y * INFINITE_SECTOR_SIZE,
-      w: INFINITE_SECTOR_SIZE,
-      h: INFINITE_SECTOR_SIZE,
-    });
+    const waypoint = safeWaypoint(seed, site, root, portal, junctionOrdinal, rooms);
     if (waypoint) {
       rooms.push(waypoint);
       chain.push(waypoint);
-      junctionIndex += 1;
+      junctionOrdinal += 1;
     }
     chain.push(portal);
-    chains.push(chain);
-  }
 
-  const width = Math.round(clamp((dna.corridor[0] + dna.corridor[1]) / 2, 12, 22));
-  for (let chainIndex = 0; chainIndex < chains.length; chainIndex += 1) {
-    const chain = chains[chainIndex];
-    for (let i = 1; i < chain.length; i += 1) {
-      const spatialIndex = buildRoomSpatialIndex(rooms);
-      let route = routeRoomsObstacleAware({
-        seed,
-        routeKey: regionKey + ":portal-route:" + chainIndex + ":" + i,
-        roomA: chain[i - 1],
-        roomB: chain[i],
+    for (let step = 1; step < chain.length; step += 1) {
+      const segments = orthogonalConnect(
+        chain[step - 1],
+        chain[step],
         width,
-        spatialIndex,
-        aggressive: false,
-        meta: {
-          regionId: -1,
-          regionKey,
+        {
+          id: site.key + ":spine:" + i + ":" + step,
+          regionKey: site.key,
+          siteKey: site.key,
           kind: "corridor",
-          sourceRoomId: chain[i - 1].id,
-          targetRoomId: chain[i].id,
+          sourceRoomId: chain[step - 1].id,
+          targetRoomId: chain[step].id,
         },
+        seed,
+        site.key + ":spine:" + i + ":" + step,
+      );
+      segments.forEach((segment, segmentIndex) => {
+        segment.id += ":" + segmentIndex;
       });
-      if (!route.length) {
-        route = routeRoomsObstacleAware({
-          seed,
-          routeKey: regionKey + ":portal-route-narrow:" + chainIndex + ":" + i,
-          roomA: chain[i - 1],
-          roomB: chain[i],
-          width: Math.max(9, width - 5),
-          spatialIndex,
-          aggressive: true,
-          meta: {
-            regionId: -1,
-            regionKey,
-            kind: "corridor",
-            sourceRoomId: chain[i - 1].id,
-            targetRoomId: chain[i].id,
-          },
-        });
-      }
-      route.forEach((segment, segmentIndex) => {
-        segment.id = regionKey + ":portal-corridor:" + chainIndex + ":" + i + ":" + segmentIndex;
-        segment.regionKey = regionKey;
-        segment.kind = "corridor";
-      });
-      routes.push(...route);
+      corridors.push(...segments);
     }
   }
-  return routes;
+
+  return corridors;
 }
 
-function growFillerRooms(seed, x, y, regionKey, dna, config, sectorBounds, root, fixedRooms, reservedCorridors) {
+function growSiteRooms(seed, site, dna, config, siteScale, fixedRooms, reservedCorridors) {
   const rooms = [...fixedRooms];
-  const corridors = [...reservedCorridors];
   const component = rooms.filter((room) => room.kind !== "portal");
-  const baseMin = Math.max(5, dna.roomCount[0] - 2);
-  const baseMax = Math.max(baseMin, dna.roomCount[1] - 1);
-  const target = Math.max(5, Math.round(randRange(seed, baseMin, baseMax, "sector", x, y, "room-count") * config.density));
+  const corridors = [...reservedCorridors];
+  const minCount = Math.max(7, Math.round(dna.roomCount[0] * 0.74 * config.density));
+  const maxCount = Math.max(minCount, Math.round(dna.roomCount[1] * 0.92 * config.density));
+  const target = randInt(seed, minCount, maxCount, "site", site.cellX, site.cellY, "room-count");
+  const maxRadius = randRange(seed, 250, 350, "site", site.cellX, site.cellY, "footprint-radius") * siteScale;
 
-  for (let index = rooms.length; rooms.length < target + fixedRooms.length; index += 1) {
-    let accepted = false;
-    for (let attempt = 0; attempt < 42; attempt += 1) {
-      const anchor = component[randInt(seed, 0, component.length - 1, "sector-room", x, y, index, "anchor", attempt)];
-      const side = randInt(seed, 0, 3, "sector-room", x, y, index, "side", attempt);
-      const hall = chance(seed, dna.hallChance * 0.72, "sector-room", x, y, index, "hall");
-      const dims = roomDimensions(seed, x, y, dna, index, hall);
-      const w = clamp(dims.w, 38, 128);
-      const h = clamp(dims.h, 34, 118);
-      const gap = chance(seed, dna.flushChance * 0.7, "sector-room", x, y, index, "flush", attempt)
+  for (let index = 1; component.length < target; index += 1) {
+    let placed = false;
+    for (let attempt = 0; attempt < 44; attempt += 1) {
+      const anchorPoolStart = Math.max(0, component.length - Math.max(5, Math.floor(component.length * 0.72)));
+      const anchor = component[randInt(seed, anchorPoolStart, component.length - 1, "room", site.cellX, site.cellY, index, "anchor", attempt)];
+      const side = randInt(seed, 0, 3, "room", site.cellX, site.cellY, index, "side", attempt);
+      const hall = chance(seed, dna.hallChance * 0.88, "room", site.cellX, site.cellY, index, "hall");
+      const dims = roomDimensions(seed, site.cellX, site.cellY, dna, index, hall, siteScale);
+      const w = clamp(dims.w, 34, 154);
+      const h = clamp(dims.h, 30, 138);
+      const flush = chance(seed, Math.min(0.48, dna.flushChance * 1.18), "room", site.cellX, site.cellY, index, "flush", attempt);
+      const gap = flush
         ? 2
-        : Math.round(randRange(seed, 7, Math.min(24, Math.max(10, dna.gap[1] * 0.45)), "sector-room", x, y, index, "gap", attempt));
-      const offset = signed(seed, Math.min(18, (side === 0 || side === 2 ? h : w) * 0.18), "sector-room", x, y, index, "offset", attempt);
+        : Math.round(randRange(seed, 7, Math.min(28, Math.max(12, dna.gap[1] * 0.48)), "room", site.cellX, site.cellY, index, "gap", attempt));
+      const offset = signed(seed, Math.min(22, (side === 0 || side === 2 ? h : w) * 0.22), "room", site.cellX, site.cellY, index, "offset", attempt);
       const candidate = {
         ...placeAttached(anchor, side, Math.round(w), Math.round(h), gap, offset),
-        id: regionKey + ":" + index,
-        regionKey,
+        id: site.key + ":" + index,
+        siteKey: site.key,
+        regionKey: site.key,
         kind: hall ? "hall" : "room",
-        variant: rand01(seed, "sector-room", x, y, index, "variant"),
+        variant: rand01(seed, "room", site.cellX, site.cellY, index, "variant"),
       };
-      if (!within(candidate, sectorBounds, 8)) continue;
-      if (hitsAny(candidate, rooms, anchor.id, 5)) continue;
-      if (hitsCorridors(candidate, reservedCorridors, 3)) continue;
 
-      const corridorWidth = Math.round(clamp(randRange(seed, dna.corridor[0], dna.corridor[1], "sector-room", x, y, index, "corridor-width"), 10, 22));
-      const connector = attachmentConnector(anchor, candidate, side, corridorWidth, {
-        id: regionKey + ":local:" + index,
-        regionId: -1,
-        regionKey,
+      const cc = centerOf(candidate);
+      if (Math.hypot(cc.x - site.x, cc.y - site.y) > maxRadius) continue;
+      if (hitsAny(candidate, rooms, new Set([anchor.id]), 5)) continue;
+      if (hitsAny(candidate, reservedCorridors, new Set(), 3)) continue;
+
+      const width = Math.round(clamp(randRange(seed, dna.corridor[0], dna.corridor[1], "room", site.cellX, site.cellY, index, "corridor-width"), 10, 23));
+      const connector = attachmentConnector(anchor, candidate, side, width, {
+        id: site.key + ":local:" + index,
+        regionKey: site.key,
+        siteKey: site.key,
         kind: gap <= 3 ? "doorway" : "corridor",
         sourceRoomId: anchor.id,
         targetRoomId: candidate.id,
       });
-      if (hitsAny(connector, rooms, anchor.id, 1)) continue;
-      if (hitsCorridors(connector, reservedCorridors, 1)) continue;
+      if (hitsAny(connector, rooms, new Set([anchor.id]), 1)) continue;
 
       rooms.push(candidate);
       component.push(candidate);
       corridors.push(connector);
-      accepted = true;
+      placed = true;
       break;
     }
-    if (!accepted && index > target + fixedRooms.length + 12) break;
+    if (!placed && index > target + 18) break;
   }
 
   return { rooms, corridors };
 }
 
-function generateSector(seed, x, y, config) {
+function generateSite(seed, x, y, config) {
   const key = cellKey(x, y);
+  const position = sitePosition(seed, x, y);
   const dna = chooseDna(seed, x, y);
-  const bounds = {
-    x: x * INFINITE_SECTOR_SIZE,
-    y: y * INFINITE_SECTOR_SIZE,
-    w: INFINITE_SECTOR_SIZE,
-    h: INFINITE_SECTOR_SIZE,
+  const siteScale = randRange(seed, 0.82, 1.28, "site", x, y, "scale");
+  const site = {
+    key,
+    cellX: x,
+    cellY: y,
+    x: position.x,
+    y: position.y,
   };
-  const sides = activeSides(seed, x, y, config.loopChance);
-  const root = createRoot(seed, x, y, dna, bounds, key);
-  const portals = sides.map((entry) => portalForSide(seed, x, y, entry.side, bounds, key));
+
+  const neighbors = activeNeighbors(seed, x, y, config.loopChance);
+  const root = createRoot(seed, site, dna, siteScale);
+  const portals = neighbors.map((neighbor, index) => {
+    const edgeKey = canonicalEdge(x, y, neighbor.x, neighbor.y);
+    return createPortal(seed, site, neighbor, edgeKey, index);
+  });
+
   const fixedRooms = [root, ...portals];
 
-  // Portal rooms are deterministic shared-edge anchors. Resolve rare local collisions
-  // by keeping the higher-priority structural portals and moving loop-only portals inward.
+  // Portals may collide around highly connected sites. Pull only the colliding portal
+  // slightly toward the site center; this is radial and does not expose the hidden lattice.
   for (let i = 1; i < fixedRooms.length; i += 1) {
-    const room = fixedRooms[i];
-    for (let attempt = 0; attempt < 5 && hitsAny(room, fixedRooms.slice(0, i), null, 4); attempt += 1) {
-      const [vx, vy] = sideVector((room.portalSide + 2) % 4);
-      room.x += vx * 14;
-      room.y += vy * 14;
+    const portal = fixedRooms[i];
+    for (let attempt = 0; attempt < 7 && hitsAny(portal, fixedRooms.slice(0, i), new Set(), 5); attempt += 1) {
+      const pc = centerOf(portal);
+      const dx = site.x - pc.x;
+      const dy = site.y - pc.y;
+      const len = Math.max(1, Math.hypot(dx, dy));
+      portal.x += (dx / len) * 18;
+      portal.y += (dy / len) * 18;
     }
   }
 
-  const reservedRoutes = buildReservedRoutes(seed, x, y, key, root, portals, fixedRooms, dna);
-  const grown = growFillerRooms(seed, x, y, key, dna, config, bounds, root, fixedRooms, reservedRoutes);
-  const regionBounds = boundsOfRects([...grown.rooms, ...grown.corridors]);
-  const c = centerOf(root);
+  const skeletonRooms = [...fixedRooms];
+  const skeleton = routeSiteSkeleton(seed, site, dna, root, portals, skeletonRooms);
+  const grown = growSiteRooms(seed, site, dna, config, siteScale, skeletonRooms, skeleton);
+  const b = boundsOfRects([...grown.rooms, ...grown.corridors]);
 
   return {
     id: -1,
     key,
-    label: "S " + x + "," + y,
+    label: "W " + x + "," + y,
     cellX: x,
     cellY: y,
-    x: c.x,
-    y: c.y,
+    x: site.x,
+    y: site.y,
     dna,
     rooms: grown.rooms,
     corridors: grown.corridors,
     doors: [],
-    bounds: regionBounds,
-    sectorBounds: bounds,
-    portals: new Map(portals.map((room) => [room.portalSide, room])),
+    bounds: b,
+    portals: new Map(portals.map((portal) => [portal.edgeKey, portal])),
   };
 }
 
-function bridgeBetween(a, sideA, b, sideB, width, meta) {
-  const roomA = a.portals.get(sideA);
-  const roomB = b.portals.get(sideB);
-  if (!roomA || !roomB) return null;
-  const ac = centerOf(roomA);
-  const bc = centerOf(roomB);
-  if (sideA === 0 || sideA === 2) {
-    const left = ac.x < bc.x ? roomA : roomB;
-    const right = left === roomA ? roomB : roomA;
-    const y = (centerOf(left).y + centerOf(right).y) / 2;
-    return rect(
-      left.x + left.w,
-      y - width / 2,
-      Math.max(1, right.x - (left.x + left.w)),
-      width,
-      { ...meta, sourceRoomId: roomA.id, targetRoomId: roomB.id },
-    );
+function edgeRoom(seed, edgeKey, index, count, a, b, blockers) {
+  const ac = centerOf(a);
+  const bc = centerOf(b);
+  const t = (index + 1) / (count + 1);
+  const dx = bc.x - ac.x;
+  const dy = bc.y - ac.y;
+  const len = Math.max(1, Math.hypot(dx, dy));
+  const px = -dy / len;
+  const py = dx / len;
+  const baseLateral = signed(seed, 58, "edge", edgeKey, "waypoint", index, "lateral");
+  const sizeW = randInt(seed, 34, 74, "edge", edgeKey, "waypoint", index, "w");
+  const sizeH = randInt(seed, 32, 68, "edge", edgeKey, "waypoint", index, "h");
+
+  for (const factor of [1, -1, 0.45, -0.45, 0]) {
+    const lateral = baseLateral * factor;
+    const cx = ac.x + dx * t + px * lateral;
+    const cy = ac.y + dy * t + py * lateral;
+    const candidate = {
+      ...rect(Math.round(cx - sizeW / 2), Math.round(cy - sizeH / 2), sizeW, sizeH),
+      id: "edge:" + edgeKey + ":room:" + index,
+      regionId: -1,
+      regionKey: "edge:" + edgeKey,
+      kind: "transition",
+      variant: rand01(seed, "edge", edgeKey, "waypoint", index, "variant"),
+      edgeKey,
+    };
+    if (!hitsAny(candidate, blockers, new Set([a.id, b.id]), 7)) return candidate;
   }
-  const top = ac.y < bc.y ? roomA : roomB;
-  const bottom = top === roomA ? roomB : roomA;
-  const x = (centerOf(top).x + centerOf(bottom).x) / 2;
-  return rect(
-    x - width / 2,
-    top.y + top.h,
-    width,
-    Math.max(1, bottom.y - (top.y + top.h)),
-    { ...meta, sourceRoomId: roomA.id, targetRoomId: roomB.id },
-  );
+
+  const cx = ac.x + dx * t;
+  const cy = ac.y + dy * t;
+  return {
+    ...rect(Math.round(cx - sizeW / 2), Math.round(cy - sizeH / 2), sizeW, sizeH),
+    id: "edge:" + edgeKey + ":room:" + index,
+    regionId: -1,
+    regionKey: "edge:" + edgeKey,
+    kind: "transition",
+    variant: rand01(seed, "edge", edgeKey, "waypoint", index, "variant"),
+    edgeKey,
+  };
 }
 
-function maxCorridorSpan(world) {
+function addEdgeSideRoom(seed, edgeKey, waypoint, index, blockers) {
+  if (!chance(seed, 0.34, "edge", edgeKey, "side-room", index, "enabled")) return null;
+  const side = randInt(seed, 0, 3, "edge", edgeKey, "side-room", index, "side");
+  const w = randInt(seed, 28, 62, "edge", edgeKey, "side-room", index, "w");
+  const h = randInt(seed, 28, 58, "edge", edgeKey, "side-room", index, "h");
+  const gap = randInt(seed, 3, 14, "edge", edgeKey, "side-room", index, "gap");
+  const candidate = {
+    ...placeAttached(waypoint, side, w, h, gap, 0),
+    id: "edge:" + edgeKey + ":side:" + index,
+    regionId: -1,
+    regionKey: "edge:" + edgeKey,
+    kind: "transition",
+    variant: rand01(seed, "edge", edgeKey, "side-room", index, "variant"),
+    edgeKey,
+  };
+  return hitsAny(candidate, blockers, new Set([waypoint.id]), 5) ? null : candidate;
+}
+
+function buildEdgeArchitecture(seed, edgeKey, siteA, siteB, blockers) {
+  const portalA = siteA.portals.get(edgeKey);
+  const portalB = siteB.portals.get(edgeKey);
+  if (!portalA || !portalB) return { rooms: [], corridors: [] };
+
+  const ac = centerOf(portalA);
+  const bc = centerOf(portalB);
+  const distance = Math.hypot(bc.x - ac.x, bc.y - ac.y);
+  const segmentTarget = randRange(seed, 105, 145, "edge", edgeKey, "segment-target");
+  const waypointCount = clamp(Math.ceil(distance / segmentTarget) - 1, 1, 7);
+  const rooms = [];
+  const localBlockers = [...blockers];
+
+  for (let i = 0; i < waypointCount; i += 1) {
+    const waypoint = edgeRoom(seed, edgeKey, i, waypointCount, portalA, portalB, localBlockers);
+    rooms.push(waypoint);
+    localBlockers.push(waypoint);
+  }
+
+  const sideRooms = [];
+  for (let i = 0; i < rooms.length; i += 1) {
+    const side = addEdgeSideRoom(seed, edgeKey, rooms[i], i, [...localBlockers, ...sideRooms]);
+    if (side) sideRooms.push(side);
+  }
+
+  const chain = [portalA, ...rooms, portalB];
+  const corridors = [];
+  const width = randInt(seed, 10, 19, "edge", edgeKey, "width");
+
+  for (let i = 1; i < chain.length; i += 1) {
+    const segments = orthogonalConnect(
+      chain[i - 1],
+      chain[i],
+      width,
+      {
+        id: "edge:" + edgeKey + ":corridor:" + i,
+        regionId: -1,
+        regionKey: "edge:" + edgeKey,
+        kind: "macro-corridor",
+        edgeKey,
+        sourceRoomId: chain[i - 1].id,
+        targetRoomId: chain[i].id,
+      },
+      seed,
+      edgeKey + ":corridor:" + i,
+    );
+    segments.forEach((segment, segmentIndex) => {
+      segment.id += ":" + segmentIndex;
+    });
+    corridors.push(...segments);
+  }
+
+  return { rooms: [...rooms, ...sideRooms], corridors };
+}
+
+function siteNeighborhoodCells(ax, ay, bx, by) {
+  const cells = [];
+  const minX = Math.min(ax, bx) - 1;
+  const maxX = Math.max(ax, bx) + 1;
+  const minY = Math.min(ay, by) - 1;
+  const maxY = Math.max(ay, by) + 1;
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) cells.push({ x, y });
+  }
+  return cells;
+}
+
+function maxBareCorridorSpan(world) {
   let max = 0;
-  const corridors = [
-    ...world.regions.flatMap((region) => region.corridors),
-    ...world.macroCorridors,
-  ];
-  for (const corridor of corridors) max = Math.max(max, corridor.w, corridor.h);
+  for (const corridor of world.macroCorridors) {
+    max = Math.max(max, corridor.w, corridor.h);
+  }
   return max;
 }
 
@@ -443,6 +576,7 @@ function stableSignature(world) {
       h = Math.imul(h, 0x01000193);
     }
   };
+
   mix(world.seed);
   mix(world.config.density.toFixed(3));
   mix(world.config.loopChance.toFixed(3));
@@ -451,87 +585,104 @@ function stableSignature(world) {
     for (const room of region.rooms) mix(room.id + ":" + room.x + "," + room.y + "," + room.w + "," + room.h + ";");
     for (const corridor of region.corridors) mix(corridor.x + "," + corridor.y + "," + corridor.w + "," + corridor.h + ";");
   }
-  for (const corridor of world.macroCorridors) mix(corridor.edgeKey + ":" + corridor.x + "," + corridor.y + "," + corridor.w + "," + corridor.h + ";");
+  for (const room of world.macroRooms) mix(room.id + ":" + room.x + "," + room.y + "," + room.w + "," + room.h + ";");
+  for (const corridor of world.macroCorridors) mix(corridor.id + ":" + corridor.x + "," + corridor.y + "," + corridor.w + "," + corridor.h + ";");
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
 export function generateInfiniteWorld(seedInput, userConfig = {}) {
   const seed = String(seedInput ?? "").trim() || "default-seed";
   const config = normalizeConfig(userConfig);
-  const regions = [];
-  const byKey = new Map();
+  const cache = new Map();
 
+  const getSite = (x, y) => {
+    const key = cellKey(x, y);
+    if (!cache.has(key)) cache.set(key, generateSite(seed, x, y, config));
+    return cache.get(key);
+  };
+
+  // The visible working set is independent of the hidden generation lattice.
+  // Site geometry may cross any cell boundary.
+  const regions = [];
+  const visibleKeys = new Set();
   for (let y = config.centerY - config.radius; y <= config.centerY + config.radius; y += 1) {
     for (let x = config.centerX - config.radius; x <= config.centerX + config.radius; x += 1) {
-      const region = generateSector(seed, x, y, config);
+      const region = getSite(x, y);
       region.id = regions.length;
-      for (const room of region.rooms) room.regionId = region.id;
-      for (const corridor of region.corridors) corridor.regionId = region.id;
+      visibleKeys.add(region.key);
       regions.push(region);
-      byKey.set(region.key, region);
     }
   }
 
+  const byKey = new Map(regions.map((region) => [region.key, region]));
   const edges = [];
+  const macroRooms = [];
   const macroCorridors = [];
+  const emittedEdges = new Set();
+
   for (const region of regions) {
-    for (const direction of [
-      { dx: 1, dy: 0, sideA: 0, sideB: 2 },
-      { dx: 0, dy: 1, sideA: 1, sideB: 3 },
-    ]) {
-      const nx = region.cellX + direction.dx;
-      const ny = region.cellY + direction.dy;
-      const neighbor = byKey.get(cellKey(nx, ny));
-      if (!neighbor) continue;
-      if (!edgeIsActive(seed, region.cellX, region.cellY, nx, ny, config.loopChance)) continue;
-      const type = edgeType(seed, region.cellX, region.cellY, nx, ny);
-      const edgeKey = canonicalEdge(region.cellX, region.cellY, nx, ny);
+    for (const neighborCoord of activeNeighbors(seed, region.cellX, region.cellY, config.loopChance)) {
+      const neighborKey = cellKey(neighborCoord.x, neighborCoord.y);
+      if (!visibleKeys.has(neighborKey)) continue;
+      const edgeKey = canonicalEdge(region.cellX, region.cellY, neighborCoord.x, neighborCoord.y);
+      if (emittedEdges.has(edgeKey)) continue;
+      emittedEdges.add(edgeKey);
+
+      const neighbor = byKey.get(neighborKey);
+      const type = edgeType(seed, region.cellX, region.cellY, neighborCoord.x, neighborCoord.y);
       const edge = { a: region.id, b: neighbor.id, type, routed: true, edgeKey };
       edges.push(edge);
-      const width = Math.round(clamp(
-        ((region.dna.corridor[0] + region.dna.corridor[1] + neighbor.dna.corridor[0] + neighbor.dna.corridor[1]) / 4),
-        10,
-        20,
-      ));
-      const bridge = bridgeBetween(region, direction.sideA, neighbor, direction.sideB, width, {
-        id: "macro:" + edgeKey,
-        regionId: -1,
-        kind: "macro-corridor",
-        edge: region.id + ":" + neighbor.id,
-        edgeKey,
-        edgeType: type,
-      });
-      if (bridge) macroCorridors.push(bridge);
+
+      const parsed = parseEdge(edgeKey);
+      const blockers = [];
+      for (const cell of siteNeighborhoodCells(parsed.ax, parsed.ay, parsed.bx, parsed.by)) {
+        blockers.push(...getSite(cell.x, cell.y).rooms);
+      }
+
+      const built = buildEdgeArchitecture(seed, edgeKey, region, neighbor, blockers);
+      macroRooms.push(...built.rooms);
+      macroCorridors.push(...built.corridors);
     }
+  }
+
+  // Assign stable display ids only after all sites are collected.
+  for (let regionId = 0; regionId < regions.length; regionId += 1) {
+    regions[regionId].id = regionId;
+    for (const room of regions[regionId].rooms) room.regionId = regionId;
+    for (const corridor of regions[regionId].corridors) corridor.regionId = regionId;
   }
 
   const allRects = [
     ...regions.flatMap((region) => region.rooms),
     ...regions.flatMap((region) => region.corridors),
+    ...macroRooms,
     ...macroCorridors,
   ];
   const bounds = unionBounds(allRects);
+
   const world = {
     infinite: true,
     seed,
-    seedHash: addressSeed(seed, "infinite-world").toString(16).padStart(8, "0"),
+    seedHash: addressSeed(seed, "infinite-world-v2").toString(16).padStart(8, "0"),
     config,
     regions,
     edges,
+    macroRooms,
     macroCorridors,
     bounds,
     stats: {
       regions: regions.length,
-      rooms: regions.reduce((sum, region) => sum + region.rooms.length, 0),
+      rooms: regions.reduce((sum, region) => sum + region.rooms.length, 0) + macroRooms.length,
       localCorridors: regions.reduce((sum, region) => sum + region.corridors.length, 0),
       macroEdges: edges.length,
-      maxCorridorSpan: 0,
+      maxBareCorridorSpan: 0,
       centerX: config.centerX,
       centerY: config.centerY,
       radius: config.radius,
     },
   };
-  world.stats.maxCorridorSpan = maxCorridorSpan(world);
+
+  world.stats.maxBareCorridorSpan = maxBareCorridorSpan(world);
   world.signature = stableSignature(world);
   return world;
 }
