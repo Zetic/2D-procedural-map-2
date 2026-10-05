@@ -10,7 +10,7 @@ const renderer = new MapRenderer($("mapCanvas"));
 let world = null;
 let toastTimer = null;
 let streaming = false;
-let streamState = { centerX: 0, centerY: 0, radius: 3 };
+let streamState = { centerX: 0, centerY: 0, radius: 2 };
 
 const controls = {
   seed: $("seedInput"),
@@ -79,7 +79,7 @@ function updateBadges() {
   $("seedBadge").textContent = "seed " + world.seed + " · " + world.signature;
   $("statsBadge").textContent =
     world.stats.regions +
-    " sectors loaded · " +
+    " architectural sites loaded · " +
     world.stats.rooms +
     " rooms · infinite world";
 }
@@ -106,7 +106,7 @@ function generate(options = {}) {
 }
 
 function resetAndGenerate() {
-  streamState = { centerX: 0, centerY: 0, radius: 3 };
+  streamState = { centerX: 0, centerY: 0, radius: 2 };
   generate({ fit: true });
 }
 
@@ -125,7 +125,7 @@ function loadUrlState() {
 
 function desiredRadius(view) {
   const visibleHalfSpan = Math.max(view.worldWidth, view.worldHeight) / 2;
-  return clamp(Math.ceil(visibleHalfSpan / INFINITE_SECTOR_SIZE) + 2, 3, 8);
+  return clamp(Math.ceil(visibleHalfSpan / INFINITE_SECTOR_SIZE) + 1, 2, 5);
 }
 
 function handleViewChange(view) {
