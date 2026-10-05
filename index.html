@@ -18,7 +18,7 @@
         </div>
       </div>
       <div class="top-actions">
-        <button id="fitBtn" class="ghost">Fit map</button>
+        <button id="fitBtn" class="ghost">Fit loaded area</button>
         <button id="copyLinkBtn" class="ghost">Copy link</button>
         <button id="exportJsonBtn" class="ghost">JSON</button>
         <button id="exportSvgBtn" class="ghost">SVG</button>
@@ -38,12 +38,6 @@
         </div>
 
         <div class="control-section">
-          <div class="range-heading">
-            <label for="regionCount">Regions</label>
-            <output id="regionCountValue">44</output>
-          </div>
-          <input id="regionCount" type="range" min="12" max="72" value="44" step="1" />
-
           <div class="range-heading">
             <label for="density">Room density</label>
             <output id="densityValue">1.00×</output>
@@ -71,8 +65,8 @@
 
         <div class="control-section info-block">
           <h2>Generation model</h2>
-          <p>World topology is generated first. Each region receives deterministic architecture DNA, then grows its own local floorplan. Cross-region graph edges are routed after local geometry exists.</p>
-          <p>Every decision is addressed by <code>hash(seed, identity, decision)</code>, so changing render order does not change the map.</p>
+          <p>The world is spatially addressed and has no fixed region count. Deterministic sectors are generated around the viewport as you pan, then discarded and regenerated identically when revisited.</p>
+          <p>Every decision is addressed by <code>hash(seed, sector coordinate, identity, decision)</code>. Shared boundary portals are derived from the same edge address on both sides, so generation order does not change the architecture.</p>
         </div>
       </aside>
 
@@ -82,7 +76,7 @@
           <span id="seedBadge" class="badge"></span>
           <span id="statsBadge" class="badge"></span>
         </div>
-        <div class="canvas-hud bottom-left hint">Wheel: zoom · Drag: pan · Double-click: fit</div>
+        <div class="canvas-hud bottom-left hint">Wheel: zoom · Drag: pan to generate indefinitely · Double-click: fit</div>
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
       </section>
     </section>
