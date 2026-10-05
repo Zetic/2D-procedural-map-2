@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateInfiniteWorld } from "../src/infinite.js";
+import { generateInfiniteWorld, INFINITE_SECTOR_SIZE } from "../src/infinite.js";
 import { intersects } from "../src/geometry.js";
 
-function sectorSnapshot(region) {
+function siteSnapshot(region) {
   return {
     key: region.key,
+    x: region.x,
+    y: region.y,
     dna: region.dna.id,
     rooms: region.rooms.map((room) => [room.id, room.x, room.y, room.w, room.h, room.kind]),
     corridors: region.corridors.map((c) => [c.x, c.y, c.w, c.h, c.kind]),
@@ -17,19 +19,20 @@ test("infinite windows are deterministic", () => {
   const a = generateInfiniteWorld("infinite-determinism", config);
   const b = generateInfiniteWorld("infinite-determinism", config);
   assert.equal(a.signature, b.signature);
+  assert.deepEqual(a.regions.map(siteSnapshot), b.regions.map(siteSnapshot));
   assert.deepEqual(
-    a.regions.map(sectorSnapshot),
-    b.regions.map(sectorSnapshot),
+    a.macroRooms.map((room) => [room.id, room.x, room.y, room.w, room.h]),
+    b.macroRooms.map((room) => [room.id, room.x, room.y, room.w, room.h]),
   );
 });
 
-test("the same sector is invariant to viewport load order", () => {
+test("the same architectural site is invariant to viewport load order", () => {
   const a = generateInfiniteWorld("viewport-invariance", { centerX: 0, centerY: 0, radius: 2 });
   const b = generateInfiniteWorld("viewport-invariance", { centerX: 2, centerY: 1, radius: 2 });
-  const mapA = new Map(a.regions.map((region) => [region.key, sectorSnapshot(region)]));
+  const mapA = new Map(a.regions.map((region) => [region.key, siteSnapshot(region)]));
   for (const region of b.regions) {
     if (!mapA.has(region.key)) continue;
-    assert.deepEqual(sectorSnapshot(region), mapA.get(region.key), region.key);
+    assert.deepEqual(siteSnapshot(region), mapA.get(region.key), region.key);
   }
 });
 
@@ -41,8 +44,35 @@ test("far coordinates generate valid deterministic architecture", () => {
   assert.ok(a.stats.rooms > 30);
 });
 
-test("streamed sectors do not overlap each other", () => {
-  const world = generateInfiniteWorld("sector-clearance", { centerX: -2, centerY: 3, radius: 2, density: 1.2 });
+test("architecture is not confined to the hidden streaming lattice", () => {
+  const world = generateInfiniteWorld("boundary-crossing", { centerX: 0, centerY: 0, radius: 3, density: 1.1 });
+  let crosses = 0;
+  for (const region of world.regions) {
+    const minX = region.cellX * INFINITE_SECTOR_SIZE - INFINITE_SECTOR_SIZE / 2;
+    const maxX = minX + INFINITE_SECTOR_SIZE;
+    const minY = region.cellY * INFINITE_SECTOR_SIZE - INFINITE_SECTOR_SIZE / 2;
+    const maxY = minY + INFINITE_SECTOR_SIZE;
+    if (region.rooms.some((room) =>
+      room.x < minX ||
+      room.y < minY ||
+      room.x + room.w > maxX ||
+      room.y + room.h > maxY
+    )) crosses += 1;
+  }
+  assert.ok(crosses > 0, "no architecture crossed a hidden streaming-cell boundary");
+});
+
+test("architectural sites are spatially jittered rather than rendered as a grid", () => {
+  const world = generateInfiniteWorld("no-visible-grid", { centerX: 0, centerY: 0, radius: 3 });
+  const offsets = world.regions.map((region) => [
+    Math.abs(region.x - region.cellX * INFINITE_SECTOR_SIZE),
+    Math.abs(region.y - region.cellY * INFINITE_SECTOR_SIZE),
+  ]);
+  assert.ok(offsets.filter(([x, y]) => x > 40 || y > 40).length > world.regions.length * 0.65);
+});
+
+test("rooms owned by different architectural sites do not overlap", () => {
+  const world = generateInfiniteWorld("site-clearance", { centerX: -2, centerY: 3, radius: 2, density: 1.15 });
   const rooms = world.regions.flatMap((region) => region.rooms);
   for (let i = 0; i < rooms.length; i += 1) {
     for (let j = i + 1; j < rooms.length; j += 1) {
@@ -52,10 +82,14 @@ test("streamed sectors do not overlap each other", () => {
   }
 });
 
-test("cross-sector halls stay short", () => {
+test("long inter-site distances are filled with transition architecture instead of bare halls", () => {
   const world = generateInfiniteWorld("short-halls", { centerX: 0, centerY: 0, radius: 3, density: 1.05 });
+  assert.ok(world.macroRooms.length > 0, "expected edge-owned transition rooms");
   for (const corridor of world.macroCorridors) {
-    assert.ok(Math.max(corridor.w, corridor.h) <= 32, "macro corridor span was " + Math.max(corridor.w, corridor.h));
+    assert.ok(
+      Math.max(corridor.w, corridor.h) <= 215,
+      "bare macro corridor span was " + Math.max(corridor.w, corridor.h),
+    );
   }
 });
 
