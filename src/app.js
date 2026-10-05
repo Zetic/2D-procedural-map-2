@@ -79,7 +79,7 @@ function updateBadges() {
   $("seedBadge").textContent = "seed " + world.seed + " · " + world.signature;
   $("statsBadge").textContent =
     world.stats.regions +
-    " architectural sites loaded · " +
+    " architectural masses loaded · " +
     world.stats.rooms +
     " rooms · infinite world";
 }
