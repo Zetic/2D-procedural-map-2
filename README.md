@@ -63,9 +63,7 @@ Then open `http://localhost:4173`.
 
 ## GitHub Pages
 
-The included `.github/workflows/pages.yml` workflow publishes the repository root as a Pages artifact on pushes to `main`.
-
-If Pages has never been enabled for the repository, open **Settings -> Pages -> Build and deployment** and select **GitHub Actions**. After that, pushes to `main` deploy automatically.
+GitHub Pages serves the repository from the `main` branch. The included `.github/workflows/pages.yml` workflow is intentionally test-only so it does not compete with GitHub's built-in Pages deployment. Pushes to `main` trigger both generator validation and the Pages branch deployment.
 
 ## Project structure
 
